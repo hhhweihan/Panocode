@@ -21,6 +21,15 @@ import {
   Loader2,
 } from "lucide-react";
 
+const LEFT_PANEL_MIN_WIDTH = 260;
+const LEFT_PANEL_MAX_WIDTH = 520;
+const TREE_PANEL_MIN_WIDTH = 220;
+const TREE_PANEL_MAX_WIDTH = 520;
+
+function clampWidth(width: number, min: number, max: number) {
+  return Math.min(Math.max(width, min), max);
+}
+
 const UI_TEXT = {
   zh: {
     invalidUrl: "GitHub URL 格式无效",
@@ -103,8 +112,76 @@ function AnalyzeContent() {
   const [checkingEntryPath, setCheckingEntryPath] = useState<string | null>(null);
 
   const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [logPanelMode, setLogPanelMode] = useState<"docked" | "floating">("docked");
+  const [leftPanelWidth, setLeftPanelWidth] = useState(288);
+  const [treePanelWidth, setTreePanelWidth] = useState(288);
   const analysisLocaleRef = useRef<AnalysisLocale>("zh");
+  const resizePanelRef = useRef<"left" | "tree" | null>(null);
   const text = UI_TEXT[analysisLocale];
+
+  useEffect(() => {
+    const savedMode = window.localStorage.getItem("panocode-log-panel-mode");
+    if (savedMode === "docked" || savedMode === "floating") {
+      setLogPanelMode(savedMode);
+    }
+
+    const savedLeftWidth = window.localStorage.getItem("panocode-left-panel-width");
+    const savedTreeWidth = window.localStorage.getItem("panocode-tree-panel-width");
+
+    if (savedLeftWidth) {
+      setLeftPanelWidth(clampWidth(Number(savedLeftWidth), LEFT_PANEL_MIN_WIDTH, LEFT_PANEL_MAX_WIDTH));
+    }
+
+    if (savedTreeWidth) {
+      setTreePanelWidth(clampWidth(Number(savedTreeWidth), TREE_PANEL_MIN_WIDTH, TREE_PANEL_MAX_WIDTH));
+    }
+  }, []);
+
+  useEffect(() => {
+    window.localStorage.setItem("panocode-log-panel-mode", logPanelMode);
+  }, [logPanelMode]);
+
+  useEffect(() => {
+    window.localStorage.setItem("panocode-left-panel-width", String(leftPanelWidth));
+  }, [leftPanelWidth]);
+
+  useEffect(() => {
+    window.localStorage.setItem("panocode-tree-panel-width", String(treePanelWidth));
+  }, [treePanelWidth]);
+
+  useEffect(() => {
+    const handlePointerMove = (event: MouseEvent) => {
+      if (resizePanelRef.current === "left") {
+        setLeftPanelWidth(clampWidth(event.clientX, LEFT_PANEL_MIN_WIDTH, LEFT_PANEL_MAX_WIDTH));
+      }
+
+      if (resizePanelRef.current === "tree") {
+        setTreePanelWidth(
+          clampWidth(event.clientX - leftPanelWidth - 4, TREE_PANEL_MIN_WIDTH, TREE_PANEL_MAX_WIDTH)
+        );
+      }
+    };
+
+    const handlePointerUp = () => {
+      resizePanelRef.current = null;
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+
+    window.addEventListener("mousemove", handlePointerMove);
+    window.addEventListener("mouseup", handlePointerUp);
+
+    return () => {
+      window.removeEventListener("mousemove", handlePointerMove);
+      window.removeEventListener("mouseup", handlePointerUp);
+    };
+  }, [leftPanelWidth]);
+
+  const startResize = (panel: "left" | "tree") => {
+    resizePanelRef.current = panel;
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+  };
 
   const addLog = useCallback((entry: LogEntry) => {
     setLogs((prev) => [...prev, entry]);
@@ -321,7 +398,7 @@ function AnalyzeContent() {
     } finally {
       setTreeLoading(false);
     }
-  }, [addLog, fetchAnalysis]);
+  }, [addLog, fetchAnalysis, text.invalidUrl, text.networkRetry, text.repoLoadFailed]);
 
   useEffect(() => {
     const url = searchParams.get("url");
@@ -439,8 +516,8 @@ function AnalyzeContent() {
       <div className="flex-1 flex overflow-hidden">
         {/* Left panel */}
         <aside
-          className="w-72 shrink-0 flex flex-col border-r overflow-hidden"
-          style={{ borderColor: "var(--border)", background: "var(--panel)" }}
+          className="shrink-0 flex flex-col border-r overflow-hidden"
+          style={{ width: `${leftPanelWidth}px`, borderColor: "var(--border)", background: "var(--panel)" }}
         >
           {/* Repo input */}
           <div className="p-3 border-b shrink-0" style={{ borderColor: "var(--border)" }}>
@@ -482,7 +559,12 @@ function AnalyzeContent() {
           </div>
 
           {/* Work log panel */}
-          <LogPanel entries={logs} locale={analysisLocale} />
+          <LogPanel
+            entries={logs}
+            locale={analysisLocale}
+            mode={logPanelMode}
+            onModeChange={setLogPanelMode}
+          />
 
           {/* Scrollable bottom: description + AI analysis */}
           <div className="flex-1 overflow-auto flex flex-col">
@@ -509,10 +591,19 @@ function AnalyzeContent() {
           </div>
         </aside>
 
+        <div
+          role="separator"
+          aria-orientation="vertical"
+          onMouseDown={() => startResize("left")}
+          className="group relative w-1 shrink-0 cursor-col-resize bg-transparent"
+        >
+          <div className="absolute inset-y-0 left-0 w-px bg-[var(--border)] transition-colors group-hover:bg-[var(--accent)]" />
+        </div>
+
         {/* Middle panel — file tree */}
         <div
-          className="w-72 shrink-0 flex flex-col border-r overflow-hidden"
-          style={{ borderColor: "var(--border)", background: "var(--panel)" }}
+          className="shrink-0 flex flex-col border-r overflow-hidden"
+          style={{ width: `${treePanelWidth}px`, borderColor: "var(--border)", background: "var(--panel)" }}
         >
           <div
             className="px-3 py-2 border-b text-xs font-medium uppercase tracking-wider shrink-0"
@@ -548,6 +639,15 @@ function AnalyzeContent() {
               />
             )}
           </div>
+        </div>
+
+        <div
+          role="separator"
+          aria-orientation="vertical"
+          onMouseDown={() => startResize("tree")}
+          className="group relative w-1 shrink-0 cursor-col-resize bg-transparent"
+        >
+          <div className="absolute inset-y-0 left-0 w-px bg-[var(--border)] transition-colors group-hover:bg-[var(--accent)]" />
         </div>
 
         {/* Right panel — code viewer */}

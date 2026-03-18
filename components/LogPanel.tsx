@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ChevronDown,
   ChevronRight,
@@ -9,6 +9,7 @@ import {
   Info,
   AlertTriangle,
   ScrollText,
+  Grip,
 } from "lucide-react";
 import { type LogEntry, truncateJsonForDisplay } from "@/lib/logger";
 import type { AnalysisLocale } from "@/components/AnalysisPanel";
@@ -19,14 +20,71 @@ const TEXT = {
     empty: "暂无日志",
     request: "请求",
     response: "响应",
+    dock: "停靠",
+    float: "浮窗",
+    dockTitle: "停靠到侧边栏",
+    floatTitle: "切换为浮窗",
+    toggleOpen: "展开或收起日志",
+    resize: "拖拽调整大小",
   },
   en: {
     title: "Activity Log",
     empty: "No logs yet",
     request: "Request",
     response: "Response",
+    dock: "Dock",
+    float: "Float",
+    dockTitle: "Dock to sidebar",
+    floatTitle: "Switch to floating window",
+    toggleOpen: "Expand or collapse logs",
+    resize: "Drag to resize",
   },
 } as const;
+
+const FLOATING_MIN_WIDTH = 280;
+const FLOATING_MIN_HEIGHT = 180;
+const FLOATING_DEFAULT_WIDTH = 380;
+const FLOATING_DEFAULT_HEIGHT = 320;
+const FLOATING_MARGIN = 16;
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(Math.max(value, min), max);
+}
+
+function getDefaultFloatingRect() {
+  if (typeof window === "undefined") {
+    return {
+      x: 0,
+      y: 0,
+      width: FLOATING_DEFAULT_WIDTH,
+      height: FLOATING_DEFAULT_HEIGHT,
+    };
+  }
+
+  const maxWidth = Math.max(FLOATING_MIN_WIDTH, window.innerWidth - FLOATING_MARGIN * 2);
+  const maxHeight = Math.max(FLOATING_MIN_HEIGHT, window.innerHeight - FLOATING_MARGIN * 2);
+  const saved = window.localStorage.getItem("panocode-log-floating-rect");
+
+  if (saved) {
+    try {
+      const parsed = JSON.parse(saved) as { x: number; y: number; width: number; height: number };
+      const width = clamp(parsed.width, FLOATING_MIN_WIDTH, maxWidth);
+      const height = clamp(parsed.height, FLOATING_MIN_HEIGHT, maxHeight);
+      const x = clamp(parsed.x, FLOATING_MARGIN, window.innerWidth - width - FLOATING_MARGIN);
+      const y = clamp(parsed.y, FLOATING_MARGIN, window.innerHeight - height - FLOATING_MARGIN);
+
+      return { x, y, width, height };
+    } catch {
+    }
+  }
+
+  return {
+    x: window.innerWidth - FLOATING_DEFAULT_WIDTH - FLOATING_MARGIN,
+    y: window.innerHeight - FLOATING_DEFAULT_HEIGHT - FLOATING_MARGIN,
+    width: FLOATING_DEFAULT_WIDTH,
+    height: FLOATING_DEFAULT_HEIGHT,
+  };
+}
 
 /* ── per-entry level styles ─────────────────────────────── */
 const LEVEL = {
@@ -110,18 +168,137 @@ function EntryRow({ entry, locale }: { entry: LogEntry; locale: AnalysisLocale }
 interface LogPanelProps {
   entries: LogEntry[];
   locale: AnalysisLocale;
+  mode: "docked" | "floating";
+  onModeChange: (mode: "docked" | "floating") => void;
 }
 
-export default function LogPanel({ entries, locale }: LogPanelProps) {
+export default function LogPanel({ entries, locale, mode, onModeChange }: LogPanelProps) {
   const [open, setOpen] = useState(true);
   const text = TEXT[locale];
 
+  const isFloating = mode === "floating";
+
+  const [floatingRect, setFloatingRect] = useState(getDefaultFloatingRect);
+  const interactionRef = useRef<
+    | {
+        type: "drag";
+        pointerOffsetX: number;
+        pointerOffsetY: number;
+      }
+    | {
+        type: "resize";
+        startX: number;
+        startY: number;
+        startWidth: number;
+        startHeight: number;
+      }
+    | null
+  >(null);
+
+  useEffect(() => {
+    window.localStorage.setItem("panocode-log-floating-rect", JSON.stringify(floatingRect));
+  }, [floatingRect]);
+
+  useEffect(() => {
+    const handlePointerMove = (event: MouseEvent) => {
+      const interaction = interactionRef.current;
+      if (!interaction) return;
+
+      if (interaction.type === "drag") {
+        setFloatingRect((prev) => ({
+          ...prev,
+          x: clamp(event.clientX - interaction.pointerOffsetX, FLOATING_MARGIN, window.innerWidth - prev.width - FLOATING_MARGIN),
+          y: clamp(event.clientY - interaction.pointerOffsetY, FLOATING_MARGIN, window.innerHeight - prev.height - FLOATING_MARGIN),
+        }));
+      }
+
+      if (interaction.type === "resize") {
+        setFloatingRect((prev) => {
+          const width = clamp(
+            interaction.startWidth + (event.clientX - interaction.startX),
+            FLOATING_MIN_WIDTH,
+            window.innerWidth - prev.x - FLOATING_MARGIN
+          );
+          const height = clamp(
+            interaction.startHeight + (event.clientY - interaction.startY),
+            FLOATING_MIN_HEIGHT,
+            window.innerHeight - prev.y - FLOATING_MARGIN
+          );
+
+          return { ...prev, width, height };
+        });
+      }
+    };
+
+    const handlePointerUp = () => {
+      interactionRef.current = null;
+      document.body.style.userSelect = "";
+      document.body.style.cursor = "";
+    };
+
+    window.addEventListener("mousemove", handlePointerMove);
+    window.addEventListener("mouseup", handlePointerUp);
+
+    return () => {
+      window.removeEventListener("mousemove", handlePointerMove);
+      window.removeEventListener("mouseup", handlePointerUp);
+    };
+  }, []);
+
+  const startDrag = (event: React.MouseEvent<HTMLDivElement>) => {
+    if (!isFloating) return;
+
+    interactionRef.current = {
+      type: "drag",
+      pointerOffsetX: event.clientX - floatingRect.x,
+      pointerOffsetY: event.clientY - floatingRect.y,
+    };
+    document.body.style.userSelect = "none";
+    document.body.style.cursor = "grabbing";
+  };
+
+  const startResize = (event: React.MouseEvent<HTMLButtonElement>) => {
+    event.stopPropagation();
+    interactionRef.current = {
+      type: "resize",
+      startX: event.clientX,
+      startY: event.clientY,
+      startWidth: floatingRect.width,
+      startHeight: floatingRect.height,
+    };
+    document.body.style.userSelect = "none";
+    document.body.style.cursor = "nwse-resize";
+  };
+
+  const rootStyle = isFloating
+    ? {
+        position: "fixed" as const,
+        left: `${floatingRect.x}px`,
+        top: `${floatingRect.y}px`,
+        width: `${floatingRect.width}px`,
+        height: open ? `${floatingRect.height}px` : "auto",
+        minWidth: `${FLOATING_MIN_WIDTH}px`,
+        minHeight: open ? `${FLOATING_MIN_HEIGHT}px` : "auto",
+        overflow: "hidden",
+        zIndex: 40,
+        border: "1px solid var(--border)",
+        borderRadius: "16px",
+        background: "color-mix(in srgb, var(--panel) 92%, transparent)",
+        boxShadow: "0 22px 48px rgba(0, 0, 0, 0.38)",
+        backdropFilter: "blur(10px)",
+      }
+    : {
+        borderBottom: "1px solid var(--border)",
+        flexShrink: 0,
+      };
+
   return (
-    <div className="border-b shrink-0" style={{ borderColor: "var(--border)" }}>
+    <div style={rootStyle}>
       {/* Header */}
-      <button
-        onClick={() => setOpen((o) => !o)}
+      <div
+        onMouseDown={startDrag}
         className="flex items-center justify-between w-full px-3 py-2 hover:bg-[var(--hover)] transition-colors"
+        style={{ cursor: isFloating ? "grab" : "default" }}
       >
         <div className="flex items-center gap-1.5">
           <ScrollText size={12} style={{ color: "var(--muted)" }} />
@@ -137,17 +314,42 @@ export default function LogPanel({ entries, locale }: LogPanelProps) {
             </span>
           )}
         </div>
-        {open
-          ? <ChevronDown size={12} style={{ color: "var(--muted)" }} />
-          : <ChevronRight size={12} style={{ color: "var(--muted)" }} />
-        }
-      </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={(event) => {
+              event.stopPropagation();
+              onModeChange(isFloating ? "docked" : "floating");
+            }}
+            className="rounded px-2 py-0.5 text-[11px] transition-colors hover:bg-[var(--hover)]"
+            style={{ color: "var(--muted)" }}
+            title={isFloating ? text.dockTitle : text.floatTitle}
+          >
+            {isFloating ? text.dock : text.float}
+          </button>
+          <button
+            onClick={(event) => {
+              event.stopPropagation();
+              setOpen((value) => !value);
+            }}
+            className="rounded p-1 transition-colors hover:bg-[var(--hover)]"
+            title={text.toggleOpen}
+          >
+            {open
+              ? <ChevronDown size={12} style={{ color: "var(--muted)" }} />
+              : <ChevronRight size={12} style={{ color: "var(--muted)" }} />
+            }
+          </button>
+        </div>
+      </div>
 
       {/* Entries */}
       {open && (
         <div
           className="overflow-y-auto"
-          style={{ maxHeight: "220px" }}
+          style={{
+            maxHeight: isFloating ? "calc(100% - 41px)" : "220px",
+            height: isFloating ? "calc(100% - 41px)" : "auto",
+          }}
         >
           {entries.length === 0 ? (
             <p className="px-3 py-3 text-xs" style={{ color: "var(--muted)" }}>
@@ -157,6 +359,16 @@ export default function LogPanel({ entries, locale }: LogPanelProps) {
             entries.map((e) => <EntryRow key={e.id} entry={e} locale={locale} />)
           )}
         </div>
+      )}
+
+      {isFloating && open && (
+        <button
+          onMouseDown={startResize}
+          className="absolute bottom-1 right-1 flex h-6 w-6 items-center justify-center rounded-md transition-colors hover:bg-[var(--hover)]"
+          title={text.resize}
+        >
+          <Grip size={12} style={{ color: "var(--muted)" }} />
+        </button>
       )}
     </div>
   );
