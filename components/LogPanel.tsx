@@ -113,9 +113,9 @@ function JsonBlock({ label, data }: { label: string; data: unknown }) {
         <pre
           className="mt-1 p-2 rounded text-xs overflow-auto leading-relaxed"
           style={{
-            background: "#0a0e1a",
+            background: "var(--debug-bg)",
             border: "1px solid var(--border)",
-            color: "#9ecfff",
+            color: "var(--debug-text)",
             fontFamily: "var(--font-geist-mono), monospace",
             maxHeight: "240px",
             whiteSpace: "pre-wrap",
@@ -170,9 +170,13 @@ interface LogPanelProps {
   locale: AnalysisLocale;
   mode: "docked" | "floating";
   onModeChange: (mode: "docked" | "floating") => void;
+  workflowStatus?: {
+    state: "idle" | "working" | "completed" | "error";
+    label: string;
+  };
 }
 
-export default function LogPanel({ entries, locale, mode, onModeChange }: LogPanelProps) {
+export default function LogPanel({ entries, locale, mode, onModeChange, workflowStatus }: LogPanelProps) {
   const [open, setOpen] = useState(true);
   const text = TEXT[locale];
 
@@ -305,6 +309,31 @@ export default function LogPanel({ entries, locale, mode, onModeChange }: LogPan
           <span className="text-xs font-medium uppercase tracking-wider" style={{ color: "var(--muted)" }}>
             {text.title}
           </span>
+          {workflowStatus && (
+            <span
+              className="text-[10px] px-1.5 py-0 rounded-full"
+              style={{
+                background:
+                  workflowStatus.state === "working"
+                    ? "#1d4ed833"
+                    : workflowStatus.state === "completed"
+                      ? "#16653433"
+                      : workflowStatus.state === "error"
+                        ? "#991b1b33"
+                        : "var(--hover)",
+                color:
+                  workflowStatus.state === "working"
+                    ? "#93c5fd"
+                    : workflowStatus.state === "completed"
+                      ? "#86efac"
+                      : workflowStatus.state === "error"
+                        ? "#fca5a5"
+                        : "var(--muted)",
+              }}
+            >
+              {workflowStatus.label}
+            </span>
+          )}
           {entries.length > 0 && (
             <span
               className="text-xs px-1.5 py-0 rounded-full"

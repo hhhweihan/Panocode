@@ -13,6 +13,33 @@
   --selected: #1f3251;
   --error: #f85149;
   --success: #3fb950;
+  --accent-contrast: #0a0e1a;
+  --hero-bg: radial-gradient(ellipse 80% 60% at 50% 0%, #0d2038 0%, #0a0e1a 60%);
+  --code-bg: #0d1117;
+  --code-line-number: #3d444d;
+  --debug-bg: #0a0e1a;
+  --debug-text: #9ecfff;
+}
+
+:root[data-theme="light"] {
+  --bg: #f5f7fb;
+  --panel: #ffffff;
+  --panel-2: #eef3f9;
+  --border: #d8e0ec;
+  --text: #152033;
+  --muted: #5f6f86;
+  --accent: #2563eb;
+  --accent-hover: #1d4ed8;
+  --hover: #e6edf7;
+  --selected: #dce9ff;
+  --error: #dc2626;
+  --success: #15803d;
+  --accent-contrast: #ffffff;
+  --hero-bg: radial-gradient(ellipse 80% 60% at 50% 0%, #dbeafe 0%, #f5f7fb 62%);
+  --code-bg: #f7f9fc;
+  --code-line-number: #9aa9bc;
+  --debug-bg: #f4f8ff;
+  --debug-text: #245296;
 }
 
 @theme inline {
@@ -37,6 +64,14 @@ body {
   color: var(--text);
   font-family: var(--font-geist-sans), -apple-system, BlinkMacSystemFont, sans-serif;
   -webkit-font-smoothing: antialiased;
+  transition: background-color 180ms ease, color 180ms ease;
+  overflow-x: hidden;
+}
+
+button,
+[role="button"],
+[role="radio"] {
+  touch-action: manipulation;
 }
 
 ::-webkit-scrollbar {

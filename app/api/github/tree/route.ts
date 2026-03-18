@@ -98,7 +98,14 @@ export async function GET(req: NextRequest) {
       branch,
       fullName: repoData.full_name as string,
       description: repoData.description as string | null,
+      homepage: (repoData.homepage as string | null) || null,
+      primaryLanguage: (repoData.language as string | null) || null,
+      license: (repoData.license?.spdx_id as string | null) || (repoData.license?.name as string | null) || null,
+      topics: Array.isArray(repoData.topics) ? (repoData.topics as string[]) : [],
       stars: repoData.stargazers_count as number,
+      forks: repoData.forks_count as number,
+      openIssues: repoData.open_issues_count as number,
+      updatedAt: repoData.updated_at as string | null,
       tree,
     });
   } catch {

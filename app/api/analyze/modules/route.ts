@@ -1,0 +1,244 @@
+import { NextRequest, NextResponse } from "next/server";
+import { promises as fs } from "node:fs";
+import path from "node:path";
+import { z } from "zod";
+import {
+  MODULE_COLOR_PALETTE,
+  type FunctionModule,
+  type ModuleAnalysisResult,
+} from "@/lib/moduleAnalysis";
+
+const ModuleSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  description: z.string(),
+  functions: z.array(z.string()).min(1),
+});
+
+const ModuleResponseSchema = z.object({
+  modules: z.array(ModuleSchema).max(10),
+});
+
+const ChatResponseSchema = z.object({
+  choices: z
+    .array(
+      z.object({
+        message: z.object({
+          content: z.union([
+            z.string(),
+            z.array(z.object({ type: z.string().optional(), text: z.string().optional() })),
+          ]).optional(),
+        }),
+      }),
+    )
+    .optional(),
+  error: z.object({ message: z.string() }).optional(),
+});
+
+function normalizeBaseUrl(u: string) {
+  return u.replace(/\/+$/, "");
+}
+
+function extractText(content: string | { type?: string; text?: string }[] | undefined): string {
+  if (typeof content === "string") return content.trim();
+  if (Array.isArray(content)) return content.map((p) => p.text ?? "").join("").trim();
+  return "";
+}
+
+function sanitizeFileName(input: string) {
+  return input.replace(/[<>:"/\\|?*]+/g, "_").replace(/\s+/g, "-");
+}
+
+function normalizeModules(
+  modules: z.infer<typeof ModuleSchema>[],
+  functionNames: string[],
+): FunctionModule[] {
+  const knownNames = new Set(functionNames);
+  const usedNames = new Set<string>();
+
+  const normalized = modules.map((moduleItem, index) => {
+    const functions = moduleItem.functions.filter((name) => {
+      if (!knownNames.has(name) || usedNames.has(name)) return false;
+      usedNames.add(name);
+      return true;
+    });
+
+    return {
+      id: moduleItem.id || `module-${index + 1}`,
+      name: moduleItem.name,
+      description: moduleItem.description,
+      color: MODULE_COLOR_PALETTE[index % MODULE_COLOR_PALETTE.length],
+      functions,
+    } satisfies FunctionModule;
+  }).filter((moduleItem) => moduleItem.functions.length > 0);
+
+  const missing = functionNames.filter((name) => !usedNames.has(name));
+  if (missing.length > 0) {
+    if (normalized.length < 10) {
+      normalized.push({
+        id: "module-other",
+        name: "Other",
+        description: "Functions that could not be confidently grouped into another module.",
+        color: MODULE_COLOR_PALETTE[normalized.length % MODULE_COLOR_PALETTE.length],
+        functions: missing,
+      });
+    } else {
+      normalized[normalized.length - 1].functions.push(...missing);
+    }
+  }
+
+  return normalized;
+}
+
+function buildAssignments(modules: FunctionModule[]) {
+  return Object.fromEntries(
+    modules.flatMap((moduleItem) =>
+      moduleItem.functions.map((functionName) => [
+        functionName,
+        {
+          functionName,
+          moduleId: moduleItem.id,
+          moduleName: moduleItem.name,
+          color: moduleItem.color,
+        },
+      ])
+    )
+  );
+}
+
+export async function POST(req: NextRequest) {
+  const apiKey = process.env.LLM_API_KEY ?? process.env.GEMINI_API_KEY;
+  const baseUrl = normalizeBaseUrl(
+    process.env.LLM_BASE_URL ?? "https://generativelanguage.googleapis.com/v1beta/openai",
+  );
+  const model = process.env.LLM_MODEL ?? "gemini-2.0-flash";
+
+  if (!apiKey) {
+    return NextResponse.json({ error: "LLM_API_KEY is not configured" }, { status: 500 });
+  }
+
+  const body = (await req.json()) as {
+    repoName: string;
+    repoUrl: string;
+    locale?: "zh" | "en";
+    summary?: string | null;
+    description?: string | null;
+    languages: { name: string; percentage: number }[];
+    techStack: { name: string; category: string }[];
+    functions: {
+      name: string;
+      description: string;
+      likelyFile: string | null;
+      drillDown: number;
+      depth: number;
+      parentFunction: string | null;
+    }[];
+  };
+
+  const { repoName, repoUrl, summary, description, languages, techStack, functions } = body;
+  const locale = body.locale ?? "zh";
+  const functionNames = functions.map((item) => item.name);
+
+  const languageInstruction = locale === "zh"
+    ? "Write module names and descriptions in Simplified Chinese when appropriate."
+    : "Write module names and descriptions in English.";
+
+  const prompt = `You are analyzing a software project's full function call panorama and need to group all analyzed functions into high-level functional modules.
+
+Repository: ${repoName}
+URL: ${repoUrl}
+Project description: ${description ?? "N/A"}
+Project summary: ${summary ?? "N/A"}
+Languages: ${languages.map((item) => `${item.name} (${item.percentage}%)`).join(", ")}
+Tech stack: ${techStack.map((item) => `${item.name} [${item.category}]`).join(", ")}
+
+Analyzed functions:
+${functions.map((item) => `- ${item.name} | depth=${item.depth} | file=${item.likelyFile ?? "N/A"} | parent=${item.parentFunction ?? "ROOT"} | drill=${item.drillDown} | ${item.description}`).join("\n")}
+
+Task:
+1. Group ALL listed functions into no more than 10 functional modules.
+2. Each function must appear exactly once in exactly one module.
+3. Keep modules architecture-oriented, not overly granular.
+4. Use concise module names and one-sentence descriptions.
+
+${languageInstruction}
+
+Return JSON only. Exact shape:
+{
+  "modules": [
+    {
+      "id": "string",
+      "name": "string",
+      "description": "string",
+      "functions": ["functionName1", "functionName2"]
+    }
+  ]
+}`;
+
+  try {
+    const res = await fetch(`${baseUrl}/chat/completions`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model,
+        temperature: 0,
+        response_format: { type: "json_object" },
+        messages: [
+          {
+            role: "system",
+            content: "You analyze function call graphs and return valid JSON only.",
+          },
+          { role: "user", content: prompt },
+        ],
+      }),
+    });
+
+    const raw = ChatResponseSchema.parse(await res.json());
+
+    if (!res.ok) {
+      const msg = raw.error?.message ?? "LLM API error";
+      return NextResponse.json({ error: msg }, { status: res.status });
+    }
+
+    const text = extractText(raw.choices?.[0]?.message.content);
+    if (!text) return NextResponse.json({ error: "Empty AI response" }, { status: 500 });
+
+    const parsed = ModuleResponseSchema.parse(JSON.parse(text));
+    const modules = normalizeModules(parsed.modules, functionNames);
+    const result: ModuleAnalysisResult = {
+      modules,
+      assignments: buildAssignments(modules),
+    };
+
+    const outputDir = path.join(process.cwd(), "analysis-output");
+    await fs.mkdir(outputDir, { recursive: true });
+
+    const outputPath = path.join(outputDir, `${sanitizeFileName(repoName)}.module-analysis.json`);
+    await fs.writeFile(outputPath, JSON.stringify({
+      generatedAt: new Date().toISOString(),
+      repoName,
+      repoUrl,
+      summary,
+      description,
+      languages,
+      techStack,
+      modules: result.modules,
+      assignments: result.assignments,
+    }, null, 2), "utf8");
+
+    result.savedFilePath = path.relative(process.cwd(), outputPath).replace(/\\/g, "/");
+    return NextResponse.json(result);
+  } catch (err) {
+    if (err instanceof z.ZodError) {
+      return NextResponse.json(
+        { error: `Invalid AI response: ${err.issues[0]?.message}` },
+        { status: 500 },
+      );
+    }
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    return NextResponse.json({ error: `Module analysis failed: ${msg}` }, { status: 500 });
+  }
+}

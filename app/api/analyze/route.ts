@@ -107,9 +107,26 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const body = await req.json() as { repoName: string; filePaths: string[]; locale?: AnalysisLocale };
+  const body = await req.json() as {
+    repoName: string;
+    filePaths: string[];
+    locale?: AnalysisLocale;
+    repoContext?: {
+      description?: string | null;
+      homepage?: string | null;
+      primaryLanguage?: string | null;
+      license?: string | null;
+      topics?: string[];
+      branch?: string;
+      stars?: number;
+      forks?: number;
+      openIssues?: number;
+      updatedAt?: string | null;
+    };
+  };
   const { repoName, filePaths } = body;
   const locale = AnalysisLocaleSchema.catch("zh").parse(body.locale);
+  const repoContext = body.repoContext;
 
   if (!repoName || !Array.isArray(filePaths) || filePaths.length === 0) {
     return NextResponse.json({ error: "Missing repoName or filePaths" }, { status: 400 });
@@ -123,9 +140,23 @@ export async function POST(req: NextRequest) {
     ? "Write summary and entryFiles.reason in Simplified Chinese. Keep technology and language proper names in their standard form when appropriate."
     : "Write summary and entryFiles.reason in English.";
 
+  const repoDetails = [
+    repoContext?.description ? `Description: ${repoContext.description}` : null,
+    repoContext?.homepage ? `Homepage: ${repoContext.homepage}` : null,
+    repoContext?.primaryLanguage ? `Primary language: ${repoContext.primaryLanguage}` : null,
+    repoContext?.license ? `License: ${repoContext.license}` : null,
+    repoContext?.branch ? `Default branch: ${repoContext.branch}` : null,
+    typeof repoContext?.stars === "number" ? `Stars: ${repoContext.stars}` : null,
+    typeof repoContext?.forks === "number" ? `Forks: ${repoContext.forks}` : null,
+    typeof repoContext?.openIssues === "number" ? `Open issues: ${repoContext.openIssues}` : null,
+    repoContext?.updatedAt ? `Last updated: ${repoContext.updatedAt}` : null,
+    repoContext?.topics && repoContext.topics.length > 0 ? `Topics: ${repoContext.topics.join(", ")}` : null,
+  ].filter(Boolean).join("\n");
+
   const prompt = `You are a software project analyzer. Analyze the file structure of this GitHub repository and return a structured analysis.
 
 Repository: ${repoName}
+${repoDetails ? `Repository details:\n${repoDetails}\n` : ""}
 Total code files${truncated ? ` (showing first 500 of ${filePaths.length})` : ""}: ${sample.length}
 
 File paths:

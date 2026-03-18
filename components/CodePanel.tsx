@@ -1,11 +1,12 @@
 "use client";
 
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
-import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
+import { oneDark, oneLight } from "react-syntax-highlighter/dist/esm/styles/prism";
 import { getLanguageFromPath } from "@/lib/github";
 import { Copy, Check } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { AnalysisLocale } from "@/components/AnalysisPanel";
+import { useTheme } from "@/lib/theme";
 
 interface CodePanelProps {
   path: string | null;
@@ -15,24 +16,73 @@ interface CodePanelProps {
   locale: AnalysisLocale;
 }
 
+const CODE_FONT_SIZE_STORAGE_KEY = "panocode-code-font-size";
+const CODE_FONT_SIZE_MIN = 11;
+const CODE_FONT_SIZE_MAX = 24;
+const CODE_FONT_SIZE_STEP = 1;
+
+function clampFontSize(size: number) {
+  return Math.min(Math.max(size, CODE_FONT_SIZE_MIN), CODE_FONT_SIZE_MAX);
+}
+
 const TEXT = {
   zh: {
     empty: "选择一个文件查看内容",
     copy: "复制",
     copied: "已复制",
     loading: "加载中",
+    zoomOut: "缩小字体",
+    zoomIn: "放大字体",
+    resetZoom: "重置字号",
+    fontSizeLabel: "字号",
   },
   en: {
     empty: "Select a file to view its contents",
     copy: "Copy",
     copied: "Copied",
     loading: "Loading",
+    zoomOut: "Decrease font size",
+    zoomIn: "Increase font size",
+    resetZoom: "Reset font size",
+    fontSizeLabel: "Font",
   },
 } as const;
 
 export default function CodePanel({ path, content, loading, error, locale }: CodePanelProps) {
   const [copied, setCopied] = useState(false);
+  const [fontSize, setFontSize] = useState(() => {
+    if (typeof window === "undefined") {
+      return 13;
+    }
+
+    try {
+      const savedFontSize = window.localStorage.getItem(CODE_FONT_SIZE_STORAGE_KEY);
+      if (!savedFontSize) return 13;
+
+      const parsed = Number(savedFontSize);
+      return Number.isNaN(parsed) ? 13 : clampFontSize(parsed);
+    } catch {
+      return 13;
+    }
+  });
+  const theme = useTheme();
   const text = TEXT[locale];
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(CODE_FONT_SIZE_STORAGE_KEY, String(fontSize));
+    } catch {
+      // Ignore localStorage write failures.
+    }
+  }, [fontSize]);
+
+  const updateFontSize = (delta: number) => {
+    setFontSize((current) => clampFontSize(current + delta));
+  };
+
+  const resetFontSize = () => {
+    setFontSize(13);
+  };
 
   const handleCopy = async () => {
     if (!content) return;
@@ -66,6 +116,39 @@ export default function CodePanel({ path, content, loading, error, locale }: Cod
           <span className="text-[var(--muted)] text-xs truncate">{path}</span>
         </div>
         <div className="flex items-center gap-3 shrink-0 ml-4">
+          <div
+            className="flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--hover)] px-1 py-1"
+          >
+            <span className="px-1 text-[10px] uppercase tracking-wider text-[var(--muted)]">
+              {text.fontSizeLabel}
+            </span>
+            <button
+              type="button"
+              onClick={() => updateFontSize(-CODE_FONT_SIZE_STEP)}
+              disabled={fontSize <= CODE_FONT_SIZE_MIN}
+              aria-label={text.zoomOut}
+              className="h-6 w-6 rounded text-sm text-[var(--muted)] transition-colors hover:bg-[var(--panel)] hover:text-[var(--text)] disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              A-
+            </button>
+            <button
+              type="button"
+              onClick={resetFontSize}
+              aria-label={text.resetZoom}
+              className="min-w-11 rounded px-1.5 py-0.5 text-[11px] text-[var(--muted)] transition-colors hover:bg-[var(--panel)] hover:text-[var(--text)]"
+            >
+              {fontSize}px
+            </button>
+            <button
+              type="button"
+              onClick={() => updateFontSize(CODE_FONT_SIZE_STEP)}
+              disabled={fontSize >= CODE_FONT_SIZE_MAX}
+              aria-label={text.zoomIn}
+              className="h-6 w-6 rounded text-sm text-[var(--muted)] transition-colors hover:bg-[var(--panel)] hover:text-[var(--text)] disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              A+
+            </button>
+          </div>
           <span className="text-xs px-2 py-0.5 rounded-full bg-[var(--hover)] text-[var(--muted)] border border-[var(--border)]">
             {language}
           </span>
@@ -97,18 +180,19 @@ export default function CodePanel({ path, content, loading, error, locale }: Cod
         {content && !loading && (
           <SyntaxHighlighter
             language={language}
-            style={oneDark}
+            style={theme === "light" ? oneLight : oneDark}
             showLineNumbers
             customStyle={{
               margin: 0,
               padding: "1rem",
-              background: "#0d1117",
-              fontSize: "13px",
+              background: "var(--code-bg)",
+              fontSize: `${fontSize}px`,
               lineHeight: "1.6",
               minHeight: "100%",
             }}
             lineNumberStyle={{
-              color: "#3d444d",
+              color: "var(--code-line-number)",
+              fontSize: `${fontSize}px`,
               userSelect: "none",
               minWidth: "3em",
             }}

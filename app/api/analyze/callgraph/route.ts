@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
+const AnalysisLocaleSchema = z.enum(["zh", "en"]);
+
 // ── Zod schemas ───────────────────────────────────────────────────────────────
 
 const CallgraphNodeSchema = z.object({
@@ -77,11 +79,16 @@ export async function POST(req: NextRequest) {
     filePath: string;
     fileContent: string;
     allFilePaths: string[];
+    locale?: "zh" | "en";
   };
 
   const { repoName, filePath, fileContent, allFilePaths } = body;
+  const locale = AnalysisLocaleSchema.catch("zh").parse(body.locale);
 
   const fileListSample = allFilePaths.slice(0, 300).join("\n");
+  const languageInstruction = locale === "zh"
+    ? "Write description in Simplified Chinese. Keep code identifiers, file paths, library names, and technical proper nouns in their standard original form when appropriate."
+    : "Write description in English.";
 
   const prompt = `You are analyzing the confirmed entry point of a GitHub repository to identify its key direct sub-functions.
 
@@ -96,13 +103,22 @@ ${fileContent}
 Repository file paths (for locating functions):
 ${fileListSample}
 
-Task: Identify up to 20 key functions, methods, or modules directly called from this entry point that are significant to understanding the project's core architecture.
+Task: Identify up to 20 key functions, methods, or modules directly called from this entry point that are truly significant to understanding the project's core feature flow and architecture.
+
+Strict filtering rules:
+- Return only calls that are part of the core business flow, request handling flow, orchestration flow, rendering flow, major subsystem coordination, or important domain logic.
+- Do NOT return routine data-structure operations, container manipulation, string operations, formatting/parsing helpers, serialization/deserialization helpers, logging calls, trivial validation wrappers, getters/setters, constructors/destructors, or other low-level utility calls unless they are clearly central to the product's main flow.
+- Prefer fewer, higher-signal callees over exhaustive lists.
+- For object-oriented languages, return the fully qualified callable name when possible, for example ClassName::methodName, Namespace::ClassName::methodName, or ClassName.methodName.
 
 For each one provide:
 - name: the exact function/class/module name as it appears in source
 - likelyFile: best-guess relative file path from the repo root (pick from the file list above; use null if purely external/stdlib/third-party)
 - drillDown: 1 if this is a substantial internal sub-system worth further analysis, 0 if uncertain, -1 if trivial/external/stdlib
 - description: one sentence explaining what it does
+
+Language requirement:
+- ${languageInstruction}
 
 Return JSON only. No markdown fences. Exact shape:
 {

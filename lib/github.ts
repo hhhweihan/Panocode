@@ -21,6 +21,13 @@ export interface RepoInfo {
   branch: string;
   fullName: string;
   description: string | null;
+  homepage?: string | null;
+  primaryLanguage?: string | null;
+  license?: string | null;
+  topics?: string[];
+  forks?: number;
+  openIssues?: number;
+  updatedAt?: string | null;
   tree: TreeNode[];
 }
 

@@ -74,6 +74,8 @@ Consider:
 - Directory structure relative to the caller file
 - Common patterns (utils/, helpers/, lib/, core/, services/, internal/, pkg/, src/, etc.)
 - The function name prefix or suffix (e.g., "DB" suggests database module, "HTTP" suggests http module)
+- If the function name is qualified like ClassName::FunctionName or Namespace::ClassName::FunctionName, consider both implementation files with the fully qualified definition and class/header files where the method may be declared inside the class body.
+- If the function might be a class member, consider files defining the surrounding class even when the method is written directly inside class/struct declarations.
 
 Return JSON only. No markdown fences. Exact shape:
 {

@@ -1,4 +1,16 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Panocode
+
+Panocode is a Next.js app for exploring public GitHub repositories with AI-assisted project analysis, entry-point detection, call graph expansion, and functional module grouping.
+
+## Features
+
+- Analyze repository structure, languages, and tech stack
+- Verify probable entry files with AI
+- Generate a recursive function panorama / call graph
+- Group analyzed functions into up to 10 functional modules
+- Color panorama nodes by module and filter the graph by module
+- Show workflow status directly in the AI log panel
+- Save module analysis results into project files under analysis-output/
 
 ## Getting Started
 
@@ -38,6 +50,40 @@ Notes:
 - The analysis route reads `LLM_API_KEY`, `LLM_BASE_URL`, and `LLM_MODEL` from the server environment.
 - The analysis route uses an OpenAI-compatible chat completions API, so you can switch providers by changing only these environment variables.
 - A working Aliyun DashScope / 百炼 example is shown above. If you switch back to Gemini later, update only the same three variables.
+
+Additional optional values:
+
+```dotenv
+GITHUB_TOKEN="your-github-token"
+GITHUB_USE_MODELS="true"
+NEXT_PUBLIC_CALLGRAPH_MAX_DEPTH="2"
+```
+
+## Analysis Workflow
+
+1. Load repository metadata and file tree from GitHub
+2. Analyze repository languages, tech stack, and candidate entry files
+3. Verify candidate entry files one by one
+4. Build the top-level call graph for the confirmed entry file
+5. Recursively expand key functions
+6. Group all analyzed functions into functional modules
+7. Save the module analysis JSON into analysis-output/
+
+## Output Files
+
+When module analysis completes, the app writes a JSON artifact to:
+
+```text
+analysis-output/<repo-name>.module-analysis.json
+```
+
+The saved JSON includes:
+
+- repository name and URL
+- project summary and description
+- languages and tech stack
+- module list
+- function-to-module assignments
 
 You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
 
