@@ -17,11 +17,10 @@ function walkDir(dir: string, root: string): TreeNode[] {
   for (const dirent of dirents) {
     if (SKIP_DIRS.has(dirent.name)) continue;
 
-    // Resolve and check for symlinks
-    const fullPath = path.join(dir, dirent.name);
-    const stat = fs.lstatSync(fullPath);
-    if (stat.isSymbolicLink()) continue;
+    // Skip symlinks using Dirent directly (no lstatSync needed)
+    if (dirent.isSymbolicLink()) continue;
 
+    const fullPath = path.join(dir, dirent.name);
     const relativePath = path.relative(root, fullPath).replace(/\\/g, "/");
 
     if (dirent.isDirectory()) {
@@ -55,7 +54,7 @@ export class LocalDataSource {
     this.resolvedRoot = path.resolve(root);
   }
 
-  getTree(): { info: ProjectInfo; tree: TreeNode[] } {
+  async getTree(): Promise<{ info: ProjectInfo; tree: TreeNode[] }> {
     const tree = walkDir(this.resolvedRoot, this.resolvedRoot);
     const info: ProjectInfo = {
       name: path.basename(this.resolvedRoot),
@@ -64,7 +63,11 @@ export class LocalDataSource {
     return { info, tree };
   }
 
-  getFile(relativePath: string): string {
+  async getFile(relativePath: string): Promise<string> {
+    if (path.isAbsolute(relativePath)) {
+      throw Object.assign(new Error("Absolute path not allowed"), { code: "TRAVERSAL" });
+    }
+
     const resolvedFile = path.resolve(this.resolvedRoot, relativePath);
     const rootWithSep = this.resolvedRoot + path.sep;
 
@@ -75,9 +78,18 @@ export class LocalDataSource {
       throw Object.assign(new Error("Path traversal detected"), { code: "TRAVERSAL" });
     }
 
-    const buf = fs.readFileSync(resolvedFile);
+    let buf: Buffer;
+    try {
+      buf = fs.readFileSync(resolvedFile);
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === "ENOENT") throw Object.assign(new Error("File not found"), { code: "ENOENT" });
+      if (code === "EACCES") throw Object.assign(new Error("Permission denied"), { code: "EACCES" });
+      throw err;
+    }
+
     // Binary file detection: null byte in first 8KB
-    const sample = buf.slice(0, 8192);
+    const sample = buf.subarray(0, 8192);
     if (sample.includes(0)) return "";
     return buf.toString("utf8");
   }
