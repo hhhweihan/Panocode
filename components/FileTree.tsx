@@ -10,7 +10,7 @@ import {
   FileCode,
   FileText,
   FileJson,
-  Image,
+  Image as ImageIcon,
 } from "lucide-react";
 import type { TreeNode } from "@/lib/github";
 
@@ -21,7 +21,7 @@ const IMG_EXTS = new Set(["png", "jpg", "jpeg", "gif", "svg", "webp", "ico"]);
 
 function getFileIcon(name: string) {
   const ext = name.split(".").pop()?.toLowerCase() || "";
-  if (IMG_EXTS.has(ext)) return <Image size={14} className="shrink-0 text-yellow-400" />;
+  if (IMG_EXTS.has(ext)) return <ImageIcon size={14} className="shrink-0 text-yellow-400" />;
   if (JSON_EXTS.has(ext)) return <FileJson size={14} className="shrink-0 text-orange-400" />;
   if (TEXT_EXTS.has(ext)) return <FileText size={14} className="shrink-0 text-slate-400" />;
   if (CODE_EXTS.has(ext)) return <FileCode size={14} className="shrink-0 text-blue-400" />;

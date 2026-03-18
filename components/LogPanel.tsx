@@ -11,6 +11,22 @@ import {
   ScrollText,
 } from "lucide-react";
 import { type LogEntry, truncateJsonForDisplay } from "@/lib/logger";
+import type { AnalysisLocale } from "@/components/AnalysisPanel";
+
+const TEXT = {
+  zh: {
+    title: "工作日志",
+    empty: "暂无日志",
+    request: "请求",
+    response: "响应",
+  },
+  en: {
+    title: "Activity Log",
+    empty: "No logs yet",
+    request: "Request",
+    response: "Response",
+  },
+} as const;
 
 /* ── per-entry level styles ─────────────────────────────── */
 const LEVEL = {
@@ -56,9 +72,10 @@ function JsonBlock({ label, data }: { label: string; data: unknown }) {
 }
 
 /* ── single log entry ───────────────────────────────────── */
-function EntryRow({ entry }: { entry: LogEntry }) {
+function EntryRow({ entry, locale }: { entry: LogEntry; locale: AnalysisLocale }) {
   const { icon: Icon, color } = LEVEL[entry.level];
   const hasJson = entry.json?.request !== undefined || entry.json?.response !== undefined;
+  const text = TEXT[locale];
 
   return (
     <div className="px-3 py-1.5 border-b last:border-0" style={{ borderColor: "var(--border)" }}>
@@ -76,10 +93,10 @@ function EntryRow({ entry }: { entry: LogEntry }) {
           {hasJson && (
             <div className="mt-0.5">
               {entry.json?.request !== undefined && (
-                <JsonBlock label="请求" data={entry.json.request} />
+                <JsonBlock label={text.request} data={entry.json.request} />
               )}
               {entry.json?.response !== undefined && (
-                <JsonBlock label="响应" data={entry.json.response} />
+                <JsonBlock label={text.response} data={entry.json.response} />
               )}
             </div>
           )}
@@ -92,10 +109,12 @@ function EntryRow({ entry }: { entry: LogEntry }) {
 /* ── panel ──────────────────────────────────────────────── */
 interface LogPanelProps {
   entries: LogEntry[];
+  locale: AnalysisLocale;
 }
 
-export default function LogPanel({ entries }: LogPanelProps) {
+export default function LogPanel({ entries, locale }: LogPanelProps) {
   const [open, setOpen] = useState(true);
+  const text = TEXT[locale];
 
   return (
     <div className="border-b shrink-0" style={{ borderColor: "var(--border)" }}>
@@ -107,7 +126,7 @@ export default function LogPanel({ entries }: LogPanelProps) {
         <div className="flex items-center gap-1.5">
           <ScrollText size={12} style={{ color: "var(--muted)" }} />
           <span className="text-xs font-medium uppercase tracking-wider" style={{ color: "var(--muted)" }}>
-            工作日志
+            {text.title}
           </span>
           {entries.length > 0 && (
             <span
@@ -132,10 +151,10 @@ export default function LogPanel({ entries }: LogPanelProps) {
         >
           {entries.length === 0 ? (
             <p className="px-3 py-3 text-xs" style={{ color: "var(--muted)" }}>
-              暂无日志
+              {text.empty}
             </p>
           ) : (
-            entries.map((e) => <EntryRow key={e.id} entry={e} />)
+            entries.map((e) => <EntryRow key={e.id} entry={e} locale={locale} />)
           )}
         </div>
       )}

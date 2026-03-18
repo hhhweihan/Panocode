@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, Suspense } from "react";
+import { useCallback, useEffect, useRef, useState, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { parseGithubUrl, type RepoInfo, type TreeNode } from "@/lib/github";
 import { filterCodeFiles } from "@/lib/codeFilter";
@@ -8,6 +8,7 @@ import { makeLogEntry, type LogEntry } from "@/lib/logger";
 import FileTree from "@/components/FileTree";
 import CodePanel from "@/components/CodePanel";
 import AnalysisPanel from "@/components/AnalysisPanel";
+import type { AnalysisLocale } from "@/components/AnalysisPanel";
 import LogPanel from "@/components/LogPanel";
 import type { AnalysisResult } from "@/app/api/analyze/route";
 import {
@@ -19,6 +20,33 @@ import {
   AlertCircle,
   Loader2,
 } from "lucide-react";
+
+const UI_TEXT = {
+  zh: {
+    invalidUrl: "GitHub URL 格式无效",
+    emptyUrl: "请输入 GitHub 仓库地址",
+    analyzeTitle: "开始分析",
+    repoLoadFailed: "仓库加载失败",
+    networkRetry: "网络错误，请重试",
+    fileLoadFailed: "文件加载失败",
+    fileContentLoadFailed: "文件内容加载失败",
+    files: "文件",
+    loadingTree: "加载文件树中...",
+    emptyRepo: "输入仓库地址以开始探索",
+  },
+  en: {
+    invalidUrl: "Invalid GitHub URL format",
+    emptyUrl: "Please enter a GitHub repository URL",
+    analyzeTitle: "Analyze",
+    repoLoadFailed: "Failed to load repository",
+    networkRetry: "Network error, please try again",
+    fileLoadFailed: "Failed to load file",
+    fileContentLoadFailed: "Failed to load file content",
+    files: "Files",
+    loadingTree: "Loading tree...",
+    emptyRepo: "Enter a repository URL to explore",
+  },
+} as const;
 
 function findNodeByPath(tree: TreeNode[], targetPath: string): TreeNode | null {
   for (const node of tree) {
@@ -68,21 +96,22 @@ function AnalyzeContent() {
   const [analysisLoading, setAnalysisLoading] = useState(false);
   const [analysisError, setAnalysisError] = useState<string | null>(null);
   const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
+  const [analysisLocale, setAnalysisLocale] = useState<AnalysisLocale>("zh");
+  const [analysisCache, setAnalysisCache] = useState<Partial<Record<AnalysisLocale, AnalysisResult>>>({});
 
   const [logs, setLogs] = useState<LogEntry[]>([]);
+  const analysisLocaleRef = useRef<AnalysisLocale>("zh");
+  const text = UI_TEXT[analysisLocale];
 
-  const addLog = (entry: LogEntry) =>
+  const addLog = useCallback((entry: LogEntry) => {
     setLogs((prev) => [...prev, entry]);
-
-  useEffect(() => {
-    const url = searchParams.get("url");
-    if (url) {
-      setInputUrl(url);
-      fetchTree(url);
-    }
   }, []);
 
-  const fetchAnalysis = async (info: RepoInfo) => {
+  useEffect(() => {
+    analysisLocaleRef.current = analysisLocale;
+  }, [analysisLocale]);
+
+  const fetchAnalysis = useCallback(async (info: RepoInfo, locale: AnalysisLocale) => {
     const allPaths = filterCodeFiles(info.tree);
 
     addLog(makeLogEntry(
@@ -115,6 +144,7 @@ function AnalyzeContent() {
         body: JSON.stringify({
           repoName: info.fullName,
           filePaths: allPaths,
+          locale,
         }),
       });
       const data = await res.json();
@@ -126,10 +156,14 @@ function AnalyzeContent() {
         return;
       }
 
-      setAnalysisResult(data as AnalysisResult);
+      const result = data as AnalysisResult;
+      setAnalysisCache((prev) => ({ ...prev, [locale]: result }));
+      if (analysisLocaleRef.current === locale) {
+        setAnalysisResult(result);
+      }
       addLog(makeLogEntry(
         "success",
-        "AI 分析完成",
+        `AI 分析完成（${locale === "zh" ? "中文" : "English"}）`,
         { response: data }
       ));
     } catch {
@@ -139,12 +173,12 @@ function AnalyzeContent() {
     } finally {
       setAnalysisLoading(false);
     }
-  };
+  }, [addLog]);
 
-  const fetchTree = async (url: string) => {
+  const fetchTree = useCallback(async (url: string) => {
     const parsed = parseGithubUrl(url);
     if (!parsed) {
-      setInputError("Invalid GitHub URL format");
+      setInputError(text.invalidUrl);
       addLog(makeLogEntry("error", `GitHub URL 校验失败：无效的地址格式 "${url}"`));
       return;
     }
@@ -162,6 +196,7 @@ function AnalyzeContent() {
     setFileContent(null);
     setAnalysisResult(null);
     setAnalysisError(null);
+    setAnalysisCache({});
     setLogs([makeLogEntry("success", `GitHub URL 校验通过：${parsed.owner}/${parsed.repo}`)]);
 
     try {
@@ -169,7 +204,7 @@ function AnalyzeContent() {
       const data = await res.json();
 
       if (!res.ok) {
-        const msg = (data as { error?: string }).error || "Failed to load repository";
+        const msg = (data as { error?: string }).error || text.repoLoadFailed;
         setTreeError(msg);
         addLog(makeLogEntry("error", `仓库获取失败：${msg}`));
         return;
@@ -184,20 +219,28 @@ function AnalyzeContent() {
         `文件树加载完成：${files} 个文件，${dirs} 个目录`
       ));
 
-      fetchAnalysis(info);
+      fetchAnalysis(info, analysisLocaleRef.current);
     } catch {
-      const msg = "网络错误，请重试";
+      const msg = text.networkRetry;
       setTreeError(msg);
       addLog(makeLogEntry("error", msg));
     } finally {
       setTreeLoading(false);
     }
-  };
+  }, [addLog, fetchAnalysis]);
+
+  useEffect(() => {
+    const url = searchParams.get("url");
+    if (url) {
+      setInputUrl(url);
+      fetchTree(url);
+    }
+  }, [fetchTree, searchParams]);
 
   const handleAnalyze = () => {
     const trimmed = inputUrl.trim();
     if (!trimmed) {
-      setInputError("Please enter a GitHub repository URL");
+      setInputError(text.emptyUrl);
       return;
     }
     router.replace(`/analyze?url=${encodeURIComponent(trimmed)}`);
@@ -221,12 +264,12 @@ function AnalyzeContent() {
       const res = await fetch(`/api/github/file?${params}`);
       const data = await res.json();
       if (!res.ok) {
-        setFileError((data as { error?: string }).error || "Failed to load file");
+        setFileError((data as { error?: string }).error || text.fileLoadFailed);
         return;
       }
       setFileContent((data as { content: string }).content);
     } catch {
-      setFileError("Failed to load file content");
+      setFileError(text.fileContentLoadFailed);
     } finally {
       setFileLoading(false);
     }
@@ -237,6 +280,21 @@ function AnalyzeContent() {
     const node = findNodeByPath(repoInfo.tree, path);
     if (node && node.type === "blob") {
       handleFileClick(node);
+    }
+  };
+
+  const handleAnalysisLocaleChange = (locale: AnalysisLocale) => {
+    setAnalysisLocale(locale);
+
+    if (analysisCache[locale]) {
+      setAnalysisResult(analysisCache[locale] ?? null);
+      setAnalysisError(null);
+      setAnalysisLoading(false);
+      return;
+    }
+
+    if (repoInfo) {
+      fetchAnalysis(repoInfo, locale);
     }
   };
 
@@ -316,7 +374,7 @@ function AnalyzeContent() {
                 onClick={handleAnalyze}
                 className="shrink-0 p-0.5 rounded transition-colors"
                 style={{ color: "var(--accent)" }}
-                title="Analyze"
+                title={text.analyzeTitle}
               >
                 <ArrowRight size={14} />
               </button>
@@ -330,7 +388,7 @@ function AnalyzeContent() {
           </div>
 
           {/* Work log panel */}
-          <LogPanel entries={logs} />
+          <LogPanel entries={logs} locale={analysisLocale} />
 
           {/* Scrollable bottom: description + AI analysis */}
           <div className="flex-1 overflow-auto flex flex-col">
@@ -347,6 +405,8 @@ function AnalyzeContent() {
                 loading={analysisLoading}
                 error={analysisError}
                 result={analysisResult}
+                locale={analysisLocale}
+                onLocaleChange={handleAnalysisLocaleChange}
                 onFileClick={handleEntryFileClick}
               />
             )}
@@ -362,14 +422,14 @@ function AnalyzeContent() {
             className="px-3 py-2 border-b text-xs font-medium uppercase tracking-wider shrink-0"
             style={{ borderColor: "var(--border)", color: "var(--muted)" }}
           >
-            Files
+            {text.files}
           </div>
 
           <div className="flex-1 overflow-auto">
             {treeLoading && (
               <div className="flex items-center justify-center gap-2 py-12 text-sm" style={{ color: "var(--muted)" }}>
                 <Loader2 size={16} className="animate-spin" />
-                Loading tree...
+                {text.loadingTree}
               </div>
             )}
             {treeError && !treeLoading && (
@@ -381,7 +441,7 @@ function AnalyzeContent() {
             {!treeLoading && !treeError && !repoInfo && (
               <div className="flex flex-col items-center gap-2 py-12 px-4 text-center" style={{ color: "var(--muted)" }}>
                 <Github size={24} />
-                <p className="text-xs">Enter a repository URL to explore</p>
+                <p className="text-xs">{text.emptyRepo}</p>
               </div>
             )}
             {repoInfo && !treeLoading && (
@@ -401,6 +461,7 @@ function AnalyzeContent() {
             content={fileContent}
             loading={fileLoading}
             error={fileError}
+            locale={analysisLocale}
           />
         </div>
       </div>

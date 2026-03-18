@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
+const AnalysisLocaleSchema = z.enum(["zh", "en"]);
+
 const AnalysisSchema = z.object({
   languages: z
     .array(
@@ -35,6 +37,7 @@ const AnalysisSchema = z.object({
 });
 
 export type AnalysisResult = z.infer<typeof AnalysisSchema>;
+export type AnalysisLocale = z.infer<typeof AnalysisLocaleSchema>;
 
 const ChatCompletionsResponseSchema = z.object({
   choices: z.array(
@@ -76,6 +79,20 @@ function getMessageText(content: string | { type?: string; text?: string }[] | u
   return "";
 }
 
+function extractJsonObject(text: string) {
+  const trimmed = text.trim();
+  const fenceMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+  const candidate = fenceMatch?.[1]?.trim() || trimmed;
+  const firstBrace = candidate.indexOf("{");
+  const lastBrace = candidate.lastIndexOf("}");
+
+  if (firstBrace === -1 || lastBrace === -1 || lastBrace <= firstBrace) {
+    throw new Error("Model did not return a JSON object");
+  }
+
+  return candidate.slice(firstBrace, lastBrace + 1);
+}
+
 export async function POST(req: NextRequest) {
   const apiKey = process.env.LLM_API_KEY ?? process.env.GEMINI_API_KEY;
   const baseUrl = normalizeBaseUrl(
@@ -90,8 +107,9 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const body = await req.json() as { repoName: string; filePaths: string[] };
+  const body = await req.json() as { repoName: string; filePaths: string[]; locale?: AnalysisLocale };
   const { repoName, filePaths } = body;
+  const locale = AnalysisLocaleSchema.catch("zh").parse(body.locale);
 
   if (!repoName || !Array.isArray(filePaths) || filePaths.length === 0) {
     return NextResponse.json({ error: "Missing repoName or filePaths" }, { status: 400 });
@@ -100,6 +118,10 @@ export async function POST(req: NextRequest) {
   // Limit to 500 paths to stay within reasonable token budget
   const sample = filePaths.slice(0, 500);
   const truncated = filePaths.length > 500;
+
+  const languageInstruction = locale === "zh"
+    ? "Write summary and entryFiles.reason in Simplified Chinese. Keep technology and language proper names in their standard form when appropriate."
+    : "Write summary and entryFiles.reason in English.";
 
   const prompt = `You are a software project analyzer. Analyze the file structure of this GitHub repository and return a structured analysis.
 
@@ -116,6 +138,7 @@ Based on the file extensions, directory structure, and naming conventions, analy
 4. A brief summary of what this project appears to be
 
 Use accurate hex colors for languages (e.g. TypeScript=#3178c6, JavaScript=#f7df1e, Python=#3572A5, Rust=#dea584, Go=#00ADD8, Java=#b07219, C++=#f34b7d, CSS=#563d7c, HTML=#e34c26, Shell=#89e051).
+${languageInstruction}
 
 Return JSON only. Do not wrap in markdown fences. Follow this exact shape:
 {
@@ -137,7 +160,6 @@ Return JSON only. Do not wrap in markdown fences. Follow this exact shape:
         body: JSON.stringify({
           model,
           temperature: 0.2,
-          response_format: { type: "json_object" },
           messages: [
             {
               role: "system",
@@ -171,7 +193,7 @@ Return JSON only. Do not wrap in markdown fences. Follow this exact shape:
       return NextResponse.json({ error: "AI returned no result" }, { status: 500 });
     }
 
-    const result = AnalysisSchema.parse(JSON.parse(text));
+    const result = AnalysisSchema.parse(JSON.parse(extractJsonObject(text)));
     if (!result) {
       return NextResponse.json({ error: "AI returned no result" }, { status: 500 });
     }

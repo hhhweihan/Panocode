@@ -27,16 +27,17 @@ cp .env.local.example .env.local
 Then configure these values in `.env.local`:
 
 ```dotenv
-LLM_API_KEY="your-google-ai-studio-api-key"
-LLM_BASE_URL="https://generativelanguage.googleapis.com/v1beta/openai"
-LLM_MODEL="gemini3-flash-preview"
+LLM_API_KEY="your-dashscope-api-key"
+LLM_BASE_URL="https://dashscope.aliyuncs.com/compatible-mode/v1"
+LLM_MODEL="qwen-plus"
 ```
 
 Notes:
 
 - `.env.local` is already ignored by git via `.gitignore`, so your key should stay out of source control.
 - The analysis route reads `LLM_API_KEY`, `LLM_BASE_URL`, and `LLM_MODEL` from the server environment.
-- `GEMINI_API_KEY` is still accepted as a fallback, but the generic `LLM_*` variables are preferred.
+- The analysis route uses an OpenAI-compatible chat completions API, so you can switch providers by changing only these environment variables.
+- A working Aliyun DashScope / 百炼 example is shown above. If you switch back to Gemini later, update only the same three variables.
 
 You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
 
