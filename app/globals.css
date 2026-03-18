@@ -19,6 +19,18 @@
   --code-line-number: #3d444d;
   --debug-bg: #0a0e1a;
   --debug-text: #9ecfff;
+  /* panorama key-node card (drillDown=1) */
+  --card-key-bg: #1a3a2e;
+  --card-key-header: #0a1f13;
+  --card-key-border: #22c55e44;
+  --card-key-text: #e6edf3;
+  --card-key-desc: #7d8590;
+  --card-key-dot: #3fb950;
+  /* panorama root card */
+  --root-card-bg: #0f2a1a;
+  --root-card-header: #0a1f13;
+  --root-card-name: #3fb950;
+  --root-card-file: #3fb95088;
 }
 
 :root[data-theme="light"] {
@@ -40,6 +52,18 @@
   --code-line-number: #9aa9bc;
   --debug-bg: #f4f8ff;
   --debug-text: #245296;
+  /* panorama key-node card (drillDown=1) — light-mode: green-tinted light bg */
+  --card-key-bg: #f0fdf4;
+  --card-key-header: #dcfce7;
+  --card-key-border: #22c55e66;
+  --card-key-text: #14532d;
+  --card-key-desc: #4a7c59;
+  --card-key-dot: #16a34a;
+  /* panorama root card */
+  --root-card-bg: #f0fdf4;
+  --root-card-header: #dcfce7;
+  --root-card-name: #15803d;
+  --root-card-file: #15803d99;
 }
 
 @theme inline {
@@ -87,4 +111,16 @@ button,
 }
 ::-webkit-scrollbar-thumb:hover {
   background: var(--muted);
+}
+
+/* ── Panorama connector line animations ──────────────────────────────────── */
+
+/* Regular tree connectors: slow leftward flow along the dashes */
+@keyframes connFlow {
+  to { stroke-dashoffset: -9; }   /* 5+4 = 9 (total dasharray period) */
+}
+
+/* Drilldown branch line: faster rightward pulse */
+@keyframes drillFlow {
+  to { stroke-dashoffset: -7; }   /* 4+3 = 7 */
 }

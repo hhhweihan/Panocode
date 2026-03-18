@@ -13,7 +13,12 @@ import LogPanel from "@/components/LogPanel";
 import PanoramaPanel from "@/components/PanoramaPanel";
 import type { AnalysisResult } from "@/app/api/analyze/route";
 import type { CallgraphResult, CallgraphNode } from "@/app/api/analyze/callgraph/route";
-import { extractFunctionSnippet, addChildrenToNode } from "@/lib/callgraphUtils";
+import {
+  addChildrenToNode,
+  extractFunctionSnippet,
+  getNodeAtPath,
+  serializeCallgraphPath,
+} from "@/lib/callgraphUtils";
 import { saveRecord, getRecordById } from "@/lib/storage";
 import type { AnalysisRecord } from "@/lib/storage";
 import { buildMarkdown, downloadMarkdown } from "@/lib/markdownExport";
@@ -151,6 +156,7 @@ function AnalyzeContent() {
   const [callgraphResult, setCallgraphResult] = useState<CallgraphResult | null>(null);
   const [callgraphDescriptionLocale, setCallgraphDescriptionLocale] = useState<AnalysisLocale>("zh");
   const [analyzingFunctions, setAnalyzingFunctions] = useState<Set<string>>(new Set());
+  const [manualDrilldownPaths, setManualDrilldownPaths] = useState<Set<string>>(new Set());
   const [moduleAnalysis, setModuleAnalysis] = useState<ModuleAnalysisResult | null>(null);
   const [selectedModuleId, setSelectedModuleId] = useState<string | null>(null);
   const [workflowState, setWorkflowState] = useState<{
@@ -184,6 +190,10 @@ function AnalyzeContent() {
     fileContent: string;
     info: RepoInfo & { stars?: number };
   } | null>(null);
+  const runModuleAnalysisRef = useRef<((
+    graphResult: CallgraphResult,
+    info: RepoInfo & { stars?: number },
+  ) => Promise<ModuleAnalysisResult | null>) | null>(null);
   const text = UI_TEXT[analysisLocale];
 
   useEffect(() => {
@@ -317,6 +327,65 @@ function AnalyzeContent() {
     saveRecord(record);
     setCurrentRecordId(record.id);
   }, [isRestoredFromHistory]);
+
+  const fetchRepoFileContent = useCallback(async (
+    info: RepoInfo & { stars?: number },
+    filePath: string,
+  ): Promise<string | null> => {
+    const node = findNodeByPath(info.tree, filePath);
+    if (!node || node.type !== "blob") {
+      return null;
+    }
+
+    try {
+      const params = new URLSearchParams({
+        owner: info.owner,
+        repo: info.repo,
+        path: node.path,
+        sha: node.sha,
+      });
+      const res = await fetch(`/api/github/file?${params}`);
+      const data = await res.json() as { content?: string };
+      if (!res.ok || !data.content) {
+        return null;
+      }
+      return data.content;
+    } catch {
+      return null;
+    }
+  }, []);
+
+  const persistCallgraphArtifact = useCallback(async (
+    graphResult: CallgraphResult,
+    info: RepoInfo & { stars?: number },
+  ): Promise<string | null> => {
+    try {
+      const currentAnalysis = analysisResultRef.current;
+      const res = await fetch("/api/analyze/callgraph/save", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          repoName: info.fullName,
+          repoUrl: `https://github.com/${info.fullName}`,
+          summary: currentAnalysis?.summary ?? null,
+          description: info.description ?? currentAnalysis?.summary ?? null,
+          locale: callgraphDescriptionLocaleRef.current,
+          callgraphResult: graphResult,
+        }),
+      });
+      const data = await res.json() as { error?: string; savedFilePath?: string };
+
+      if (!res.ok) {
+        addLog(makeLogEntry("warning", `调用图工程文件保存失败：${data.error ?? "unknown error"}`));
+        return null;
+      }
+
+      return data.savedFilePath ?? null;
+    } catch {
+      addLog(makeLogEntry("warning", "调用图工程文件保存失败：网络请求异常"));
+      return null;
+    }
+  }, [addLog]);
 
   const runRecursiveAnalysis = useCallback(async (
     initialResult: CallgraphResult,
@@ -511,6 +580,164 @@ function AnalyzeContent() {
     return localResult;
   }, [addLog]);
 
+  const handleManualDrilldown = useCallback(async (path: number[]) => {
+    const info = repoInfo;
+    const graph = callgraphResultRef.current;
+    if (!info || !graph) {
+      return;
+    }
+
+    const targetNode = getNodeAtPath(graph, path);
+    if (!targetNode || targetNode.drillDown === -1 || (targetNode.children?.length ?? 0) > 0) {
+      return;
+    }
+
+    const pathKey = serializeCallgraphPath(path);
+    setManualDrilldownPaths((prev) => new Set(prev).add(pathKey));
+    setAnalyzingFunctions((prev) => new Set(prev).add(targetNode.name));
+    addLog(makeLogEntry("info", `手动下钻：开始分析 ${targetNode.name} 的下一层子节点…`));
+
+    try {
+      const allFilePaths = filterCodeFiles(info.tree);
+      const parentNode = path.length > 1 ? getNodeAtPath(graph, path.slice(0, -1)) : null;
+      const candidateFiles = [
+        parentNode?.likelyFile ?? graph.entryFile,
+        targetNode.likelyFile,
+      ].filter((value, index, list): value is string => Boolean(value) && list.indexOf(value) === index);
+
+      let functionSnippet: string | null = null;
+      let foundFile = candidateFiles[0] ?? graph.entryFile;
+
+      for (const candidateFile of candidateFiles) {
+        const content = await fetchRepoFileContent(info, candidateFile);
+        if (!content) {
+          continue;
+        }
+
+        const snippet = extractFunctionSnippet(content, targetNode.name);
+        if (snippet) {
+          functionSnippet = snippet;
+          foundFile = candidateFile;
+          break;
+        }
+      }
+
+      if (!functionSnippet) {
+        const locateRequest = {
+          repoName: info.fullName,
+          functionName: targetNode.name,
+          callerFile: parentNode?.likelyFile ?? graph.entryFile,
+          allFilePaths,
+        };
+        addLog(makeLogEntry("info", `手动下钻：定位 ${targetNode.name} 的源码文件`, { request: locateRequest }));
+
+        const locateRes = await fetch("/api/analyze/callgraph/locate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(locateRequest),
+        });
+        const locateData = await locateRes.json() as { error?: string; suggestedFiles?: string[] };
+
+        if (locateRes.ok && locateData.suggestedFiles) {
+          for (const suggestedFile of locateData.suggestedFiles) {
+            const content = await fetchRepoFileContent(info, suggestedFile);
+            if (!content) {
+              continue;
+            }
+
+            const snippet = extractFunctionSnippet(content, targetNode.name);
+            if (snippet) {
+              functionSnippet = snippet;
+              foundFile = suggestedFile;
+              break;
+            }
+          }
+        } else {
+          addLog(makeLogEntry("warning", `手动下钻定位失败：${locateData.error ?? targetNode.name}`));
+        }
+      }
+
+      if (!functionSnippet) {
+        addLog(makeLogEntry("warning", `手动下钻失败：无法定位 ${targetNode.name} 的函数实现`));
+        return;
+      }
+
+      const cacheKey = `${foundFile}::${targetNode.name}`.toLowerCase();
+      let nextChildren = drilldownCacheRef.current.get(cacheKey) ?? null;
+
+      if (!nextChildren) {
+        const expandRequest = {
+          repoName: info.fullName,
+          functionName: targetNode.name,
+          filePath: foundFile,
+          functionSnippet,
+          allFilePaths,
+          locale: callgraphDescriptionLocaleRef.current,
+        };
+        addLog(makeLogEntry("info", `手动下钻：请求 ${targetNode.name} 的一层子节点`, { request: expandRequest }));
+
+        const expandRes = await fetch("/api/analyze/callgraph/expand", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(expandRequest),
+        });
+        const expandData = await expandRes.json() as { error?: string; children?: CallgraphNode[] };
+
+        if (!expandRes.ok) {
+          addLog(makeLogEntry("warning", `手动下钻失败：${expandData.error ?? "expand failed"}`));
+          return;
+        }
+
+        nextChildren = expandData.children ?? [];
+        drilldownCacheRef.current.set(cacheKey, nextChildren);
+      }
+
+      const updatedResult = addChildrenToNode(graph, path, nextChildren ?? []);
+      setCallgraphResult(updatedResult);
+      callgraphResultRef.current = updatedResult;
+      callgraphCacheRef.current[callgraphDescriptionLocaleRef.current] = updatedResult;
+
+      const savedFilePath = await persistCallgraphArtifact(updatedResult, info);
+      addLog(makeLogEntry(
+        "success",
+        `手动下钻完成：${targetNode.name} 新增 ${(nextChildren ?? []).length} 个子节点${savedFilePath ? `，已保存到 ${savedFilePath}` : ""}`,
+      ));
+
+      if (!isRestoredFromHistory) {
+        triggerSave(info);
+      }
+
+      if (runModuleAnalysisRef.current) {
+        setModuleAnalysis(null);
+        moduleAnalysisRef.current = null;
+        setSelectedModuleId(null);
+        addLog(makeLogEntry("info", "手动下钻后重新生成功能模块划分…"));
+        const refreshedModuleAnalysis = await runModuleAnalysisRef.current(updatedResult, info);
+        if (refreshedModuleAnalysis && !isRestoredFromHistory) {
+          triggerSave(info);
+        }
+      }
+    } finally {
+      setManualDrilldownPaths((prev) => {
+        const next = new Set(prev);
+        next.delete(pathKey);
+        return next;
+      });
+      setAnalyzingFunctions((prev) => {
+        const next = new Set(prev);
+        next.delete(targetNode.name);
+        return next;
+      });
+    }
+  }, [
+    addLog,
+    fetchRepoFileContent,
+    isRestoredFromHistory,
+    persistCallgraphArtifact,
+    repoInfo,
+    triggerSave,
+  ]);
+
   const runModuleAnalysis = useCallback(async (
     graphResult: CallgraphResult,
     info: RepoInfo & { stars?: number },
@@ -546,6 +773,7 @@ function AnalyzeContent() {
 
       const result = data as ModuleAnalysisResult;
       setModuleAnalysis(result);
+      moduleAnalysisRef.current = result;
       setSelectedModuleId(null);
       addLog(makeLogEntry(
         "success",
@@ -558,17 +786,23 @@ function AnalyzeContent() {
     }
   }, [addLog]);
 
+  useEffect(() => {
+    runModuleAnalysisRef.current = runModuleAnalysis;
+  }, [runModuleAnalysis]);
+
   const runCallgraphAnalysis = useCallback(async (
     confirmedPath: string,
     fileContent: string,
     info: RepoInfo & { stars?: number },
     descriptionLocale: AnalysisLocale = callgraphDescriptionLocaleRef.current,
   ) => {
+    const currentAnalysis = analysisResultRef.current;
     confirmedEntryContextRef.current = { path: confirmedPath, fileContent, info };
     setWorkflowState({ state: "working", stage: "callgraph" });
     setCallgraphLoading(true);
     setCallgraphResult(null);
     setAnalyzingFunctions(new Set());
+    setManualDrilldownPaths(new Set());
     drilldownCacheRef.current.clear();
 
     const allFilePaths = filterCodeFiles(info.tree);
@@ -580,6 +814,13 @@ function AnalyzeContent() {
         filePath: confirmedPath,
         fileContent,
         allFilePaths,
+        languages: currentAnalysis?.languages.map((item) => ({
+          name: item.name,
+          percentage: item.percentage,
+        })),
+        techStack: currentAnalysis?.techStack,
+        summary: currentAnalysis?.summary ?? null,
+        description: info.description ?? currentAnalysis?.summary ?? null,
         locale: descriptionLocale,
       };
       addLog(makeLogEntry("info", `调用图分析：请求关键子函数 ${confirmedPath}`, { request: callgraphRequest }));
@@ -600,14 +841,22 @@ function AnalyzeContent() {
       setCallgraphResult(result);
       addLog(makeLogEntry(
         "success",
-        `调用图分析完成：${result.rootFunction} 识别到 ${result.children.length} 个关键子函数`,
+        `调用图分析完成：${result.rootFunction} 识别到 ${result.children.length} 个关键子函数${result.bridge ? `，已启用 ${result.bridge.strategyName}` : ""}`,
         { response: data },
       ));
+      if (result.bridge) {
+        addLog(makeLogEntry("info", `桥接模式：${result.bridge.reason}`));
+      }
 
       setWorkflowState({ state: "working", stage: "recursive" });
       const finalResult = await runRecursiveAnalysis(result, info, fileContent, descriptionLocale);
       setCallgraphResult(finalResult);
       callgraphCacheRef.current[descriptionLocale] = finalResult;
+
+      const savedFilePath = await persistCallgraphArtifact(finalResult, info);
+      if (savedFilePath) {
+        addLog(makeLogEntry("success", `调用图工程文件已保存到 ${savedFilePath}`));
+      }
 
       if (descriptionLocale === callgraphDescriptionLocaleRef.current && !moduleAnalysisRef.current) {
         await runModuleAnalysis(finalResult, info);
@@ -622,7 +871,7 @@ function AnalyzeContent() {
     } finally {
       setCallgraphLoading(false);
     }
-  }, [addLog, runModuleAnalysis, runRecursiveAnalysis, triggerSave]);
+  }, [addLog, persistCallgraphArtifact, runModuleAnalysis, runRecursiveAnalysis, triggerSave]);
 
   const resolveConfirmedEntryContext = useCallback(async () => {
     if (confirmedEntryContextRef.current) {
@@ -742,6 +991,7 @@ function AnalyzeContent() {
           body: JSON.stringify({
             repoUrl: `https://github.com/${info.fullName}`,
             repoName: info.fullName,
+            locale: analysisLocaleRef.current,
             description: info.description ?? null,
             languages: languages.map((l) => ({ name: l.name, percentage: l.percentage })),
             filePath: entry.path,
@@ -899,6 +1149,7 @@ function AnalyzeContent() {
     setCallgraphDescriptionLocale("zh");
     setCallgraphLoading(false);
     setAnalyzingFunctions(new Set());
+    setManualDrilldownPaths(new Set());
     setModuleAnalysis(null);
     setSelectedModuleId(null);
     drilldownCacheRef.current.clear();
@@ -977,6 +1228,7 @@ function AnalyzeContent() {
     setSelectedModuleId(null);
     setCallgraphLoading(false);
     setAnalyzingFunctions(new Set());
+    setManualDrilldownPaths(new Set());
     callgraphCacheRef.current = {};
     confirmedEntryContextRef.current = null;
     setLogs(record.logs);
@@ -1200,6 +1452,7 @@ function AnalyzeContent() {
                 result={analysisResult}
                 repoInfo={repoInfo}
                 moduleAnalysis={moduleAnalysis}
+                callgraphBridge={callgraphResult?.bridge ?? null}
                 selectedModuleId={selectedModuleId}
                 locale={analysisLocale}
                 onLocaleChange={handleAnalysisLocaleChange}
@@ -1306,7 +1559,10 @@ function AnalyzeContent() {
             descriptionLocale={callgraphDescriptionLocale}
             onDescriptionLocaleChange={handleCallgraphDescriptionLocaleChange}
             onFileClick={handleEntryFileClick}
+            onManualDrilldown={handleManualDrilldown}
             analyzingFunctions={analyzingFunctions}
+            manualDrilldownPaths={manualDrilldownPaths}
+            repoName={repoInfo?.fullName}
           />
         </div>
       </div>

@@ -3,6 +3,7 @@
 import { Loader2, AlertCircle, Sparkles, FileCode, CheckCircle2, XCircle } from "lucide-react";
 import type { AnalysisResult } from "@/app/api/analyze/route";
 import type { EntryCheckResult } from "@/app/api/analyze/entry/route";
+import type { CallgraphBridgeInfo } from "@/lib/callgraphBridge";
 import type { RepoInfo } from "@/lib/github";
 import type { ModuleAnalysisResult } from "@/lib/moduleAnalysis";
 
@@ -28,6 +29,7 @@ interface AnalysisPanelProps {
   result: AnalysisResult | null;
   repoInfo?: RepoInfo & { stars?: number } | null;
   moduleAnalysis?: ModuleAnalysisResult | null;
+  callgraphBridge?: CallgraphBridgeInfo | null;
   selectedModuleId?: string | null;
   locale: AnalysisLocale;
   onLocaleChange: (locale: AnalysisLocale) => void;
@@ -54,6 +56,9 @@ const PANEL_TEXT = {
     topics: "主题",
     updatedAt: "更新于",
     modules: "功能模块",
+    bridgeMode: "桥接模式",
+    bridgeReason: "命中原因",
+    bridgeEvidence: "命中证据",
     allModules: "全部模块",
     moduleFile: "工程文件",
     languages: "语言",
@@ -87,6 +92,9 @@ const PANEL_TEXT = {
     topics: "Topics",
     updatedAt: "Updated",
     modules: "Modules",
+    bridgeMode: "Bridge Mode",
+    bridgeReason: "Reason",
+    bridgeEvidence: "Evidence",
     allModules: "All Modules",
     moduleFile: "Saved File",
     languages: "Languages",
@@ -112,6 +120,7 @@ export default function AnalysisPanel({
   result,
   repoInfo,
   moduleAnalysis,
+  callgraphBridge,
   selectedModuleId,
   locale,
   onLocaleChange,
@@ -192,6 +201,55 @@ export default function AnalysisPanel({
         <p className="text-xs leading-relaxed" style={{ color: "var(--muted)" }}>
           {result.summary}
         </p>
+      )}
+
+      {callgraphBridge && (
+        <div className="flex flex-col gap-2">
+          <span className="text-xs font-medium" style={{ color: "var(--text)" }}>{text.bridgeMode}</span>
+          <div className="rounded-lg border p-2.5" style={{ borderColor: "var(--border)", background: "var(--panel-2)" }}>
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span
+                className="text-xs px-2 py-0.5 rounded-full border"
+                style={{
+                  color: "var(--accent)",
+                  borderColor: "color-mix(in srgb, var(--accent) 40%, var(--border))",
+                  background: "color-mix(in srgb, var(--accent) 12%, transparent)",
+                }}
+              >
+                {callgraphBridge.strategyName}
+              </span>
+              <span className="text-[11px]" style={{ color: "var(--muted)" }}>
+                {callgraphBridge.strategyId}
+              </span>
+            </div>
+            <div className="mt-2 flex flex-col gap-1">
+              <span className="text-[11px] uppercase tracking-wider" style={{ color: "var(--muted)" }}>{text.bridgeReason}</span>
+              <p className="text-xs leading-relaxed" style={{ color: "var(--text)" }}>
+                {callgraphBridge.reason}
+              </p>
+            </div>
+            {callgraphBridge.evidence.length > 0 && (
+              <div className="mt-2 flex flex-col gap-1">
+                <span className="text-[11px] uppercase tracking-wider" style={{ color: "var(--muted)" }}>{text.bridgeEvidence}</span>
+                <div className="flex flex-wrap gap-1.5">
+                  {callgraphBridge.evidence.map((item) => (
+                    <span
+                      key={item}
+                      className="text-xs px-2 py-0.5 rounded-full border"
+                      style={{
+                        color: "var(--text)",
+                        borderColor: "var(--border)",
+                        background: "var(--panel)",
+                      }}
+                    >
+                      {item}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
       )}
 
       {/* Repo Details */}

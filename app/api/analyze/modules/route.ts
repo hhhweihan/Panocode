@@ -3,6 +3,12 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import {
+  ChatCompletionsResponseSchema,
+  extractText,
+  formatProviderError,
+  requestChatCompletionsWithFallback,
+} from "@/lib/llm";
+import {
   MODULE_COLOR_PALETTE,
   type FunctionModule,
   type ModuleAnalysisResult,
@@ -18,32 +24,6 @@ const ModuleSchema = z.object({
 const ModuleResponseSchema = z.object({
   modules: z.array(ModuleSchema).max(10),
 });
-
-const ChatResponseSchema = z.object({
-  choices: z
-    .array(
-      z.object({
-        message: z.object({
-          content: z.union([
-            z.string(),
-            z.array(z.object({ type: z.string().optional(), text: z.string().optional() })),
-          ]).optional(),
-        }),
-      }),
-    )
-    .optional(),
-  error: z.object({ message: z.string() }).optional(),
-});
-
-function normalizeBaseUrl(u: string) {
-  return u.replace(/\/+$/, "");
-}
-
-function extractText(content: string | { type?: string; text?: string }[] | undefined): string {
-  if (typeof content === "string") return content.trim();
-  if (Array.isArray(content)) return content.map((p) => p.text ?? "").join("").trim();
-  return "";
-}
 
 function sanitizeFileName(input: string) {
   return input.replace(/[<>:"/\\|?*]+/g, "_").replace(/\s+/g, "-");
@@ -107,16 +87,6 @@ function buildAssignments(modules: FunctionModule[]) {
 }
 
 export async function POST(req: NextRequest) {
-  const apiKey = process.env.LLM_API_KEY ?? process.env.GEMINI_API_KEY;
-  const baseUrl = normalizeBaseUrl(
-    process.env.LLM_BASE_URL ?? "https://generativelanguage.googleapis.com/v1beta/openai",
-  );
-  const model = process.env.LLM_MODEL ?? "gemini-2.0-flash";
-
-  if (!apiKey) {
-    return NextResponse.json({ error: "LLM_API_KEY is not configured" }, { status: 500 });
-  }
-
   const body = (await req.json()) as {
     repoName: string;
     repoUrl: string;
@@ -176,14 +146,8 @@ Return JSON only. Exact shape:
 }`;
 
   try {
-    const res = await fetch(`${baseUrl}/chat/completions`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model,
+    const { response: res, raw } = await requestChatCompletionsWithFallback({
+      payload: {
         temperature: 0,
         response_format: { type: "json_object" },
         messages: [
@@ -193,17 +157,17 @@ Return JSON only. Exact shape:
           },
           { role: "user", content: prompt },
         ],
-      }),
+      },
     });
 
-    const raw = ChatResponseSchema.parse(await res.json());
+    const parsedRaw = ChatCompletionsResponseSchema.parse(raw ?? {});
 
     if (!res.ok) {
-      const msg = raw.error?.message ?? "LLM API error";
+      const msg = formatProviderError(parsedRaw.error?.message ?? "LLM API error");
       return NextResponse.json({ error: msg }, { status: res.status });
     }
 
-    const text = extractText(raw.choices?.[0]?.message.content);
+    const text = extractText(parsedRaw.choices?.[0]?.message.content);
     if (!text) return NextResponse.json({ error: "Empty AI response" }, { status: 500 });
 
     const parsed = ModuleResponseSchema.parse(JSON.parse(text));

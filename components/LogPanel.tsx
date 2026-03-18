@@ -315,19 +315,19 @@ export default function LogPanel({ entries, locale, mode, onModeChange, workflow
               style={{
                 background:
                   workflowStatus.state === "working"
-                    ? "#1d4ed833"
+                    ? "color-mix(in srgb, var(--accent) 18%, transparent)"
                     : workflowStatus.state === "completed"
-                      ? "#16653433"
+                      ? "color-mix(in srgb, var(--success) 18%, transparent)"
                       : workflowStatus.state === "error"
-                        ? "#991b1b33"
+                        ? "color-mix(in srgb, var(--error) 18%, transparent)"
                         : "var(--hover)",
                 color:
                   workflowStatus.state === "working"
-                    ? "#93c5fd"
+                    ? "var(--accent)"
                     : workflowStatus.state === "completed"
-                      ? "#86efac"
+                      ? "var(--success)"
                       : workflowStatus.state === "error"
-                        ? "#fca5a5"
+                        ? "var(--error)"
                         : "var(--muted)",
               }}
             >

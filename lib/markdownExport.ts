@@ -27,13 +27,22 @@ function drillDownLabel(drillDown: number): string {
   return "[---]";
 }
 
+function nodeTypeLabel(node: CallgraphNode): string {
+  return [
+    node.nodeType === "controller" ? "[CTRL]" : null,
+    node.bridgeNote ? "[BRIDGE]" : null,
+  ].filter(Boolean).join(" ");
+}
+
 function renderCallgraphAscii(
   node: CallgraphNode & { children?: (CallgraphNode & { children?: unknown[] })[] },
   prefix = "",
   isLast = true,
 ): string {
   const connector = isLast ? "└── " : "├── ";
-  const label = `${drillDownLabel(node.drillDown)} ${node.name}`;
+  const parts = [drillDownLabel(node.drillDown), nodeTypeLabel(node), node.routePath ? `[${node.routePath}]` : "", node.name]
+    .filter(Boolean);
+  const label = parts.join(" ");
   const desc = node.description ? ` — ${node.description}` : "";
   let line = `${prefix}${connector}${label}${desc}`;
 
@@ -48,7 +57,10 @@ function renderCallgraphAscii(
 }
 
 function renderCallgraph(result: CallgraphResult): string {
-  const lines = [`${result.rootFunction} (${result.entryFile})`];
+  const rootLine = result.bridge
+    ? `${result.rootFunction} (${result.entryFile}) [bridge: ${result.bridge.strategyName}]`
+    : `${result.rootFunction} (${result.entryFile})`;
+  const lines = [rootLine];
   result.children.forEach((child, i) => {
     lines.push(
       renderCallgraphAscii(
@@ -152,7 +164,7 @@ export function buildMarkdown(record: AnalysisRecord): string {
     lines.push(renderCallgraph(callgraphResult));
     lines.push("```");
     lines.push("");
-    lines.push("Legend: `[KEY]` = key internal subsystem · `[EXT]` = uncertain · `[---]` = trivial/external");
+    lines.push("Legend: `[KEY]` = key internal subsystem · `[EXT]` = uncertain · `[---]` = trivial/external · `[CTRL]` = controller handler · `[BRIDGE]` = framework bridge node");
     lines.push("");
   }
 

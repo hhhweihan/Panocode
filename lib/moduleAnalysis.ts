@@ -43,11 +43,26 @@ export const MODULE_COLOR_PALETTE = [
   "#ec4899",
 ];
 
+function enrichNodeDescription(node: Pick<CallgraphNode, "description" | "routePath" | "bridgeNote">): string {
+  const extras = [
+    node.routePath ? `Endpoint: ${node.routePath}` : null,
+    node.bridgeNote,
+  ].filter(Boolean);
+
+  if (extras.length === 0) {
+    return node.description;
+  }
+
+  return `${node.description} (${extras.join(" | ")})`;
+}
+
 export function flattenCallgraphFunctions(result: CallgraphResult): ModuleAnalysisFunctionInput[] {
   const nodes: ModuleAnalysisFunctionInput[] = [
     {
       name: result.rootFunction,
-      description: `Entry/root function in ${result.entryFile}`,
+      description: result.bridge
+        ? `Entry/root function in ${result.entryFile}. ${result.bridge.reason}`
+        : `Entry/root function in ${result.entryFile}`,
       likelyFile: result.entryFile,
       drillDown: 1,
       depth: 0,
@@ -59,7 +74,7 @@ export function flattenCallgraphFunctions(result: CallgraphResult): ModuleAnalys
     for (const child of children) {
       nodes.push({
         name: child.name,
-        description: child.description,
+        description: enrichNodeDescription(child),
         likelyFile: child.likelyFile,
         drillDown: child.drillDown,
         depth,
