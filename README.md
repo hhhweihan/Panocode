@@ -16,6 +16,29 @@ bun dev
 
 Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
 
+## AI Analysis Setup
+
+Create a local environment file before using the repository analysis feature:
+
+```bash
+cp .env.local.example .env.local
+```
+
+Then configure these values in `.env.local`:
+
+```dotenv
+LLM_API_KEY="your-dashscope-api-key"
+LLM_BASE_URL="https://dashscope.aliyuncs.com/compatible-mode/v1"
+LLM_MODEL="qwen-plus"
+```
+
+Notes:
+
+- `.env.local` is already ignored by git via `.gitignore`, so your key should stay out of source control.
+- The analysis route reads `LLM_API_KEY`, `LLM_BASE_URL`, and `LLM_MODEL` from the server environment.
+- The analysis route uses an OpenAI-compatible chat completions API, so you can switch providers by changing only these environment variables.
+- A working Aliyun DashScope / 百炼 example is shown above. If you switch back to Gemini later, update only the same three variables.
+
 You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
 
 This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.

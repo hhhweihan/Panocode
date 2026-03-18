@@ -5,16 +5,34 @@ import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
 import { getLanguageFromPath } from "@/lib/github";
 import { Copy, Check } from "lucide-react";
 import { useState } from "react";
+import type { AnalysisLocale } from "@/components/AnalysisPanel";
 
 interface CodePanelProps {
   path: string | null;
   content: string | null;
   loading: boolean;
   error: string | null;
+  locale: AnalysisLocale;
 }
 
-export default function CodePanel({ path, content, loading, error }: CodePanelProps) {
+const TEXT = {
+  zh: {
+    empty: "选择一个文件查看内容",
+    copy: "复制",
+    copied: "已复制",
+    loading: "加载中",
+  },
+  en: {
+    empty: "Select a file to view its contents",
+    copy: "Copy",
+    copied: "Copied",
+    loading: "Loading",
+  },
+} as const;
+
+export default function CodePanel({ path, content, loading, error, locale }: CodePanelProps) {
   const [copied, setCopied] = useState(false);
+  const text = TEXT[locale];
 
   const handleCopy = async () => {
     if (!content) return;
@@ -32,7 +50,7 @@ export default function CodePanel({ path, content, loading, error }: CodePanelPr
             <polyline points="8 6 2 12 8 18" />
           </svg>
         </div>
-        <p className="text-sm">Select a file to view its contents</p>
+        <p className="text-sm">{text.empty}</p>
       </div>
     );
   }
@@ -57,7 +75,7 @@ export default function CodePanel({ path, content, loading, error }: CodePanelPr
               className="flex items-center gap-1.5 text-xs text-[var(--muted)] hover:text-[var(--text)] transition-colors"
             >
               {copied ? <Check size={13} className="text-[var(--success)]" /> : <Copy size={13} />}
-              {copied ? "Copied" : "Copy"}
+              {copied ? text.copied : text.copy}
             </button>
           )}
         </div>
@@ -68,7 +86,7 @@ export default function CodePanel({ path, content, loading, error }: CodePanelPr
         {loading && (
           <div className="h-full flex items-center justify-center text-[var(--muted)] text-sm gap-2">
             <div className="w-4 h-4 border-2 border-[var(--border)] border-t-[var(--accent)] rounded-full animate-spin" />
-            Loading {filename}...
+            {text.loading} {filename}...
           </div>
         )}
         {error && !loading && (

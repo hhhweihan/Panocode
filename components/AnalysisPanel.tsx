@@ -3,6 +3,8 @@
 import { Loader2, AlertCircle, Sparkles, FileCode } from "lucide-react";
 import type { AnalysisResult } from "@/app/api/analyze/route";
 
+export type AnalysisLocale = "zh" | "en";
+
 const CATEGORY_STYLES: Record<string, { bg: string; text: string; border: string }> = {
   framework: { bg: "#2d1b69", text: "#c4b5fd", border: "#7c3aed" },
   library:   { bg: "#1e3a5f", text: "#93c5fd", border: "#3b82f6" },
@@ -19,21 +21,74 @@ interface AnalysisPanelProps {
   loading: boolean;
   error: string | null;
   result: AnalysisResult | null;
+  locale: AnalysisLocale;
+  onLocaleChange: (locale: AnalysisLocale) => void;
   onFileClick: (path: string) => void;
 }
+
+const PANEL_TEXT = {
+  zh: {
+    loading: "AI 分析中...",
+    errorTitle: "分析失败",
+    title: "AI 分析",
+    languages: "语言",
+    techStack: "技术栈",
+    entryFiles: "入口文件",
+    localeLabel: "语言",
+    localeZh: "中文",
+    localeEn: "English",
+    category: {
+      framework: "框架",
+      library: "库",
+      language: "语言",
+      tool: "工具",
+      database: "数据库",
+      platform: "平台",
+      testing: "测试",
+      devops: "DevOps",
+      other: "其他",
+    },
+  },
+  en: {
+    loading: "Analyzing...",
+    errorTitle: "Analysis Failed",
+    title: "AI Analysis",
+    languages: "Languages",
+    techStack: "Tech Stack",
+    entryFiles: "Entry Files",
+    localeLabel: "Language",
+    localeZh: "中文",
+    localeEn: "English",
+    category: {
+      framework: "Framework",
+      library: "Library",
+      language: "Language",
+      tool: "Tool",
+      database: "Database",
+      platform: "Platform",
+      testing: "Testing",
+      devops: "DevOps",
+      other: "Other",
+    },
+  },
+} as const;
 
 export default function AnalysisPanel({
   loading,
   error,
   result,
+  locale,
+  onLocaleChange,
   onFileClick,
 }: AnalysisPanelProps) {
+  const text = PANEL_TEXT[locale];
+
   if (loading) {
     return (
       <div className="flex flex-col items-center gap-2 py-8 px-3">
         <div className="flex items-center gap-2 text-xs" style={{ color: "var(--muted)" }}>
           <Loader2 size={13} className="animate-spin" style={{ color: "var(--accent)" }} />
-          AI 分析中...
+          {text.loading}
         </div>
       </div>
     );
@@ -44,7 +99,7 @@ export default function AnalysisPanel({
       <div className="flex flex-col gap-1.5 px-3 py-4">
         <div className="flex items-center gap-1.5 text-xs" style={{ color: "var(--error)" }}>
           <AlertCircle size={13} />
-          分析失败
+          {text.errorTitle}
         </div>
         <p className="text-xs leading-relaxed" style={{ color: "var(--muted)" }}>
           {error}
@@ -57,15 +112,37 @@ export default function AnalysisPanel({
 
   return (
     <div className="flex flex-col gap-4 px-3 py-3">
-      {/* Header */}
-      <div className="flex items-center gap-1.5">
-        <Sparkles size={12} style={{ color: "var(--accent)" }} />
-        <span className="text-xs font-semibold uppercase tracking-wider" style={{ color: "var(--muted)" }}>
-          AI 分析
-        </span>
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-1.5">
+          <Sparkles size={12} style={{ color: "var(--accent)" }} />
+          <span className="text-xs font-semibold uppercase tracking-wider" style={{ color: "var(--muted)" }}>
+            {text.title}
+          </span>
+        </div>
+        <div className="flex items-center gap-1 rounded-md border px-1 py-1" style={{ borderColor: "var(--border)" }}>
+          <span className="px-1 text-[10px] uppercase tracking-wider" style={{ color: "var(--muted)" }}>
+            {text.localeLabel}
+          </span>
+          {(["zh", "en"] as const).map((value) => {
+            const active = value === locale;
+
+            return (
+              <button
+                key={value}
+                onClick={() => onLocaleChange(value)}
+                className="rounded px-2 py-0.5 text-[11px] transition-colors"
+                style={{
+                  background: active ? "var(--accent)" : "transparent",
+                  color: active ? "#0a0e1a" : "var(--muted)",
+                }}
+              >
+                {value === "zh" ? text.localeZh : text.localeEn}
+              </button>
+            );
+          })}
+        </div>
       </div>
 
-      {/* Summary */}
       {result.summary && (
         <p className="text-xs leading-relaxed" style={{ color: "var(--muted)" }}>
           {result.summary}
@@ -76,10 +153,8 @@ export default function AnalysisPanel({
       {result.languages.length > 0 && (
         <div className="flex flex-col gap-2">
           <span className="text-xs font-medium" style={{ color: "var(--text)" }}>
-            语言
+            {text.languages}
           </span>
-
-          {/* Stacked bar */}
           <div className="flex h-2 rounded-full overflow-hidden gap-px">
             {result.languages.map((lang) => (
               <div
@@ -93,8 +168,6 @@ export default function AnalysisPanel({
               />
             ))}
           </div>
-
-          {/* Legend */}
           <div className="flex flex-col gap-1">
             {result.languages.map((lang) => (
               <div key={lang.name} className="flex items-center justify-between">
@@ -120,7 +193,7 @@ export default function AnalysisPanel({
       {result.techStack.length > 0 && (
         <div className="flex flex-col gap-2">
           <span className="text-xs font-medium" style={{ color: "var(--text)" }}>
-            技术栈
+            {text.techStack}
           </span>
           <div className="flex flex-wrap gap-1.5">
             {result.techStack.map((item) => {
@@ -134,7 +207,7 @@ export default function AnalysisPanel({
                     color: style.text,
                     borderColor: style.border,
                   }}
-                  title={item.category}
+                  title={text.category[item.category]}
                 >
                   {item.name}
                 </span>
@@ -148,7 +221,7 @@ export default function AnalysisPanel({
       {result.entryFiles.length > 0 && (
         <div className="flex flex-col gap-2">
           <span className="text-xs font-medium" style={{ color: "var(--text)" }}>
-            入口文件
+            {text.entryFiles}
           </span>
           <div className="flex flex-col gap-1">
             {result.entryFiles.map((entry) => (
