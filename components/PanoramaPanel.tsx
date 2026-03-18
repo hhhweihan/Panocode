@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Loader2, Network, RefreshCcw, ZoomIn, ZoomOut } from "lucide-react";
 import type { CallgraphResult, CallgraphNode } from "@/app/api/analyze/callgraph/route";
 import type { AnalysisLocale } from "@/components/AnalysisPanel";
+import { getFunctionModule, type ModuleAnalysisResult } from "@/lib/moduleAnalysis";
 
 // ── Layout constants ──────────────────────────────────────────────────────────
 
@@ -41,6 +42,9 @@ const TEXT = {
     zoomIn:  "放大",
     zoomOut: "缩小",
     noFile:  "—",
+    descriptionLanguage: "函数介绍",
+    localeZh: "中文",
+    localeEn: "English",
   },
   en: {
     title:   "Panorama",
@@ -50,6 +54,9 @@ const TEXT = {
     zoomIn:  "Zoom in",
     zoomOut: "Zoom out",
     noFile:  "—",
+    descriptionLanguage: "Descriptions",
+    localeZh: "中文",
+    localeEn: "English",
   },
 } as const;
 
@@ -223,7 +230,21 @@ function Connectors({
 
 // ── Root node card ────────────────────────────────────────────────────────────
 
-function RootCard({ name, file, onClick }: { name: string; file: string; onClick: () => void }) {
+function RootCard({
+  name,
+  file,
+  onClick,
+  moduleColor,
+  isDimmed,
+  isHighlighted,
+}: {
+  name: string;
+  file: string;
+  onClick: () => void;
+  moduleColor?: string | null;
+  isDimmed: boolean;
+  isHighlighted: boolean;
+}) {
   const filename = file.split("/").pop() ?? file;
   return (
     <div
@@ -235,18 +256,22 @@ function RootCard({ name, file, onClick }: { name: string; file: string; onClick
         cursor: "pointer",
         borderRadius: 10,
         overflow: "hidden",
-        border: "1px solid #22c55e55",
+        border: `1px solid ${moduleColor ?? "#22c55e55"}`,
         background: "#0f2a1a",
-        boxShadow: "0 4px 16px rgba(0,0,0,0.3)",
+        boxShadow: isHighlighted
+          ? `0 0 0 2px ${moduleColor ?? "#22c55e"}, 0 4px 16px rgba(0,0,0,0.3)`
+          : "0 4px 16px rgba(0,0,0,0.3)",
+        opacity: isDimmed ? 0.22 : 1,
+        filter: isDimmed ? "grayscale(1)" : "none",
       }}
     >
       <div
         style={{
           padding: "5px 10px",
-          borderBottom: "1px solid #22c55e33",
-          background: "#0a1f13",
+          borderBottom: `1px solid ${moduleColor ?? "#22c55e33"}`,
+          background: moduleColor ?? "#0a1f13",
           fontSize: 10,
-          color: "#3fb950",
+          color: "#ffffff",
           overflow: "hidden",
           textOverflow: "ellipsis",
           whiteSpace: "nowrap",
@@ -293,15 +318,18 @@ interface ChildCardProps {
   locale: AnalysisLocale;
   onFileClick: (path: string) => void;
   isAnalyzing: boolean;
+  moduleColor?: string | null;
+  isDimmed: boolean;
+  isHighlighted: boolean;
 }
 
-function ChildCard({ node, locale, onFileClick, isAnalyzing }: ChildCardProps) {
+function ChildCard({ node, locale, onFileClick, isAnalyzing, moduleColor, isDimmed, isHighlighted }: ChildCardProps) {
   const s = DRILL_STYLE[node.drillDown] ?? DRILL_STYLE[0];
   const label = DRILL_LABEL[locale][node.drillDown as -1 | 0 | 1];
   const filename = node.likelyFile
     ? (node.likelyFile.split("/").pop() ?? node.likelyFile)
     : TEXT[locale].noFile;
-  const dimmed = node.drillDown === -1;
+  const dimmed = node.drillDown === -1 || isDimmed;
 
   return (
     <div
@@ -314,11 +342,14 @@ function ChildCard({ node, locale, onFileClick, isAnalyzing }: ChildCardProps) {
         cursor: node.likelyFile ? "pointer" : "default",
         borderRadius: 8,
         overflow: "hidden",
-        border: `1px solid ${s.border}`,
+        border: `1px solid ${moduleColor ?? s.border}`,
         background: s.bg,
         opacity: dimmed ? 0.55 : 1,
-        boxShadow: "0 2px 8px rgba(0,0,0,0.25)",
-        transition: "opacity 0.15s",
+        boxShadow: isHighlighted
+          ? `0 0 0 2px ${moduleColor ?? s.dot}, 0 2px 12px rgba(0,0,0,0.28)`
+          : "0 2px 8px rgba(0,0,0,0.25)",
+        transition: "opacity 0.15s, box-shadow 0.15s",
+        filter: isDimmed ? "grayscale(1)" : "none",
       }}
     >
       {/* Header */}
@@ -326,7 +357,7 @@ function ChildCard({ node, locale, onFileClick, isAnalyzing }: ChildCardProps) {
         style={{
           padding: "4px 8px",
           borderBottom: "1px solid var(--border)",
-          background: "color-mix(in srgb, var(--hover) 60%, transparent)",
+          background: moduleColor ?? "color-mix(in srgb, var(--hover) 60%, transparent)",
           display: "flex",
           alignItems: "center",
           justifyContent: "space-between",
@@ -336,7 +367,7 @@ function ChildCard({ node, locale, onFileClick, isAnalyzing }: ChildCardProps) {
         <span
           style={{
             fontSize: 10,
-            color: "var(--muted)",
+            color: moduleColor ? "#ffffffdd" : "var(--muted)",
             overflow: "hidden",
             textOverflow: "ellipsis",
             whiteSpace: "nowrap",
@@ -421,7 +452,11 @@ function ChildCard({ node, locale, onFileClick, isAnalyzing }: ChildCardProps) {
 interface PanoramaPanelProps {
   loading: boolean;
   result: CallgraphResult | null;
+  moduleAnalysis?: ModuleAnalysisResult | null;
+  selectedModuleId?: string | null;
   locale: AnalysisLocale;
+  descriptionLocale: AnalysisLocale;
+  onDescriptionLocaleChange: (locale: AnalysisLocale) => void;
   onFileClick: (path: string) => void;
   analyzingFunctions?: Set<string>;
 }
@@ -429,7 +464,11 @@ interface PanoramaPanelProps {
 export default function PanoramaPanel({
   loading,
   result,
+  moduleAnalysis,
+  selectedModuleId,
   locale,
+  descriptionLocale,
+  onDescriptionLocaleChange,
   onFileClick,
   analyzingFunctions,
 }: PanoramaPanelProps) {
@@ -463,10 +502,18 @@ export default function PanoramaPanel({
 
   // Only reset view when result transitions from null → non-null (first load)
   useEffect(() => {
+    let frameId: number | null = null;
     if (result && !prevResultRef.current) {
-      resetView();
+      frameId = window.requestAnimationFrame(() => {
+        resetView();
+      });
     }
     prevResultRef.current = result;
+    return () => {
+      if (frameId !== null) {
+        window.cancelAnimationFrame(frameId);
+      }
+    };
   }, [result, resetView]);
 
   // ── Pan (global mouse move) ─────────────────────────────────────────────────
@@ -499,18 +546,26 @@ export default function PanoramaPanel({
     };
   }, []);
 
-  // ── Zoom (passive:false wheel) ──────────────────────────────────────────────
+  // ── Zoom (mouse wheel) ─────────────────────────────────────────────────────
 
-  useEffect(() => {
-    const el = containerRef.current;
-    if (!el) return;
-    const handler = (e: WheelEvent) => {
-      e.preventDefault();
-      setScale((prev) => Math.min(Math.max(prev * (e.deltaY < 0 ? 1.1 : 0.9), 0.1), 4));
-    };
-    el.addEventListener("wheel", handler, { passive: false });
-    return () => el.removeEventListener("wheel", handler);
-  }, []);
+  const onWheel = useCallback((e: React.WheelEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    if (!containerRef.current) return;
+
+    const rect = containerRef.current.getBoundingClientRect();
+    const mouseX = e.clientX - rect.left;
+    const mouseY = e.clientY - rect.top;
+    const nextScale = Math.min(Math.max(scale * (e.deltaY < 0 ? 1.1 : 0.9), 0.1), 4);
+
+    if (nextScale === scale) return;
+
+    const worldX = (mouseX - tx) / scale;
+    const worldY = (mouseY - ty) / scale;
+
+    setScale(nextScale);
+    setTx(mouseX - worldX * nextScale);
+    setTy(mouseY - worldY * nextScale);
+  }, [scale, tx, ty]);
 
   // ── Toolbar buttons ─────────────────────────────────────────────────────────
 
@@ -554,6 +609,27 @@ export default function PanoramaPanel({
           )}
         </div>
         <div className="flex items-center gap-0.5">
+          <div className="mr-2 flex items-center gap-1 rounded-md border px-1 py-1" style={{ borderColor: "var(--border)" }}>
+            <span className="px-1 text-[10px] uppercase tracking-wider" style={{ color: "var(--muted)" }}>
+              {t.descriptionLanguage}
+            </span>
+            {(["zh", "en"] as const).map((value) => {
+              const active = value === descriptionLocale;
+              return (
+                <button
+                  key={value}
+                  onClick={() => onDescriptionLocaleChange(value)}
+                  className="rounded px-2 py-0.5 text-[11px] transition-colors"
+                  style={{
+                    background: active ? "var(--accent)" : "transparent",
+                    color: active ? "var(--accent-contrast)" : "var(--muted)",
+                  }}
+                >
+                  {value === "zh" ? t.localeZh : t.localeEn}
+                </button>
+              );
+            })}
+          </div>
           <button
             onClick={zoomOut}
             className="p-1 rounded hover:bg-[var(--hover)] transition-colors"
@@ -604,6 +680,7 @@ export default function PanoramaPanel({
             className="absolute inset-0"
             style={{ cursor: "grab" }}
             onMouseDown={onMouseDown}
+            onWheel={onWheel}
           >
             <div
               style={{
@@ -633,11 +710,14 @@ export default function PanoramaPanel({
                   name={result.rootFunction}
                   file={result.entryFile}
                   onClick={() => onFileClick(result.entryFile)}
+                  moduleColor={getFunctionModule(moduleAnalysis, result.rootFunction)?.color}
+                  isDimmed={selectedModuleId !== null && getFunctionModule(moduleAnalysis, result.rootFunction)?.moduleId !== selectedModuleId}
+                  isHighlighted={selectedModuleId !== null && getFunctionModule(moduleAnalysis, result.rootFunction)?.moduleId === selectedModuleId}
                 />
               </div>
 
               {/* Child cards */}
-              {layout.nodes.map((ln, i) => (
+              {layout.nodes.map((ln) => (
                 <div
                   key={`${ln.parentPath.join("-")}-${ln.selfIndex}-${ln.node.name}`}
                   style={{ position: "absolute", left: ln.x, top: ln.y }}
@@ -647,6 +727,9 @@ export default function PanoramaPanel({
                     locale={locale}
                     onFileClick={onFileClick}
                     isAnalyzing={analyzingFunctions?.has(ln.node.name) ?? false}
+                    moduleColor={getFunctionModule(moduleAnalysis, ln.node.name)?.color}
+                    isDimmed={selectedModuleId !== null && getFunctionModule(moduleAnalysis, ln.node.name)?.moduleId !== selectedModuleId}
+                    isHighlighted={selectedModuleId !== null && getFunctionModule(moduleAnalysis, ln.node.name)?.moduleId === selectedModuleId}
                   />
                 </div>
               ))}

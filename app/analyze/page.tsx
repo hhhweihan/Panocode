@@ -14,6 +14,10 @@ import PanoramaPanel from "@/components/PanoramaPanel";
 import type { AnalysisResult } from "@/app/api/analyze/route";
 import type { CallgraphResult, CallgraphNode } from "@/app/api/analyze/callgraph/route";
 import { extractFunctionSnippet, addChildrenToNode } from "@/lib/callgraphUtils";
+import { saveRecord, getRecordById } from "@/lib/storage";
+import type { AnalysisRecord } from "@/lib/storage";
+import { buildMarkdown, downloadMarkdown } from "@/lib/markdownExport";
+import { flattenCallgraphFunctions, type ModuleAnalysisResult } from "@/lib/moduleAnalysis";
 import {
   Github,
   ArrowRight,
@@ -22,6 +26,8 @@ import {
   ChevronLeft,
   AlertCircle,
   Loader2,
+  RefreshCcw,
+  Download,
 } from "lucide-react";
 
 const LEFT_PANEL_MIN_WIDTH = 260;
@@ -59,6 +65,31 @@ const UI_TEXT = {
     files: "Files",
     loadingTree: "Loading tree...",
     emptyRepo: "Enter a repository URL to explore",
+  },
+} as const;
+
+const WORKFLOW_LABELS = {
+  zh: {
+    idle: "待开始",
+    tree: "加载仓库中",
+    analysis: "仓库 AI 分析中",
+    entry: "入口研判中",
+    callgraph: "调用图分析中",
+    recursive: "递归扩展中",
+    modules: "模块划分中",
+    complete: "工作流结束",
+    error: "流程异常",
+  },
+  en: {
+    idle: "Idle",
+    tree: "Loading Repo",
+    analysis: "Analyzing Repo",
+    entry: "Checking Entry",
+    callgraph: "Building Callgraph",
+    recursive: "Expanding Graph",
+    modules: "Analyzing Modules",
+    complete: "Workflow Complete",
+    error: "Workflow Error",
   },
 } as const;
 
@@ -118,7 +149,14 @@ function AnalyzeContent() {
 
   const [callgraphLoading, setCallgraphLoading] = useState(false);
   const [callgraphResult, setCallgraphResult] = useState<CallgraphResult | null>(null);
+  const [callgraphDescriptionLocale, setCallgraphDescriptionLocale] = useState<AnalysisLocale>("zh");
   const [analyzingFunctions, setAnalyzingFunctions] = useState<Set<string>>(new Set());
+  const [moduleAnalysis, setModuleAnalysis] = useState<ModuleAnalysisResult | null>(null);
+  const [selectedModuleId, setSelectedModuleId] = useState<string | null>(null);
+  const [workflowState, setWorkflowState] = useState<{
+    state: "idle" | "working" | "completed" | "error";
+    stage: keyof typeof WORKFLOW_LABELS.zh;
+  }>({ state: "idle", stage: "idle" });
 
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [logPanelMode, setLogPanelMode] = useState<"docked" | "floating">("docked");
@@ -127,6 +165,25 @@ function AnalyzeContent() {
   const [panoramaPanelWidth, setPanoramaPanelWidth] = useState(400);
   const analysisLocaleRef = useRef<AnalysisLocale>("zh");
   const resizePanelRef = useRef<"left" | "tree" | "panorama" | null>(null);
+
+  const [isRestoredFromHistory, setIsRestoredFromHistory] = useState(false);
+  const [currentRecordId, setCurrentRecordId] = useState<string | null>(null);
+
+  // Stale-closure-safe refs for save trigger
+  const analysisResultRef = useRef<typeof analysisResult>(null);
+  const entryCheckResultsRef = useRef<Record<string, import("@/app/api/analyze/entry/route").EntryCheckResult>>({});
+  const callgraphResultRef = useRef<typeof callgraphResult>(null);
+  const moduleAnalysisRef = useRef<ModuleAnalysisResult | null>(null);
+  const logsRef = useRef<typeof logs>([]);
+  const analyzeUrlRef = useRef<string>("");
+  const drilldownCacheRef = useRef<Map<string, CallgraphNode[]>>(new Map());
+  const callgraphCacheRef = useRef<Partial<Record<AnalysisLocale, CallgraphResult>>>({});
+  const callgraphDescriptionLocaleRef = useRef<AnalysisLocale>("zh");
+  const confirmedEntryContextRef = useRef<{
+    path: string;
+    fileContent: string;
+    info: RepoInfo & { stars?: number };
+  } | null>(null);
   const text = UI_TEXT[analysisLocale];
 
   useEffect(() => {
@@ -214,17 +271,68 @@ function AnalyzeContent() {
     analysisLocaleRef.current = analysisLocale;
   }, [analysisLocale]);
 
+  useEffect(() => {
+    callgraphDescriptionLocaleRef.current = callgraphDescriptionLocale;
+  }, [callgraphDescriptionLocale]);
+
+  useEffect(() => { analysisResultRef.current = analysisResult; }, [analysisResult]);
+  useEffect(() => { entryCheckResultsRef.current = entryCheckResults; }, [entryCheckResults]);
+  useEffect(() => { callgraphResultRef.current = callgraphResult; }, [callgraphResult]);
+  useEffect(() => { moduleAnalysisRef.current = moduleAnalysis; }, [moduleAnalysis]);
+  useEffect(() => { logsRef.current = logs; }, [logs]);
+
+  const triggerSave = useCallback((
+    info: import("@/lib/github").RepoInfo & { stars?: number },
+  ) => {
+    if (isRestoredFromHistory) return;
+    const result = analysisResultRef.current;
+    if (!result) return;
+
+    const record: AnalysisRecord = {
+      id: String(Date.now()),
+      analyzedAt: new Date().toISOString(),
+      url: analyzeUrlRef.current,
+      repoMeta: {
+        owner: info.owner,
+        repo: info.repo,
+        branch: info.branch,
+        fullName: info.fullName,
+        description: info.description,
+        homepage: info.homepage,
+        primaryLanguage: info.primaryLanguage,
+        license: info.license,
+        topics: info.topics,
+        stars: info.stars,
+        forks: info.forks,
+        openIssues: info.openIssues,
+        updatedAt: info.updatedAt,
+      },
+      fileTree: info.tree,
+      analysisResult: result,
+      entryCheckResults: entryCheckResultsRef.current,
+      callgraphResult: callgraphResultRef.current,
+      moduleAnalysis: moduleAnalysisRef.current,
+      logs: logsRef.current,
+    };
+    saveRecord(record);
+    setCurrentRecordId(record.id);
+  }, [isRestoredFromHistory]);
+
   const runRecursiveAnalysis = useCallback(async (
     initialResult: CallgraphResult,
     info: RepoInfo & { stars?: number },
     entryFileContent: string,
+    descriptionLocale: AnalysisLocale,
   ) => {
     const maxDepth = parseInt(process.env.NEXT_PUBLIC_CALLGRAPH_MAX_DEPTH ?? "2", 10);
-    if (maxDepth < 2) return; // depth-1 is already done by the initial callgraph
+    if (maxDepth < 2) return initialResult; // depth-1 is already done by the initial callgraph
 
     const allFilePaths = filterCodeFiles(info.tree);
     const contentCache = new Map<string, string>();
     contentCache.set(initialResult.entryFile, entryFileContent);
+
+    const getFunctionCacheKey = (functionName: string, filePath: string) =>
+      `${filePath}::${functionName}`.toLowerCase();
 
     async function fetchContent(filePath: string): Promise<string | null> {
       if (contentCache.has(filePath)) return contentCache.get(filePath)!;
@@ -250,7 +358,7 @@ function AnalyzeContent() {
     };
 
     const queue: QueueItem[] = initialResult.children
-      .filter((n) => n.drillDown >= 0)
+      .filter((n) => n.drillDown === 1)
       .map((node, i) => ({
         node,
         depth: 1,
@@ -266,9 +374,12 @@ function AnalyzeContent() {
       const { node, depth, parentFile, pathIndices } = item;
 
       if (depth >= maxDepth) continue;
-      if (visited.has(node.name)) continue;
-      if (node.drillDown === -1) continue;
-      visited.add(node.name);
+      if (node.drillDown !== 1) continue;
+
+      const wasVisited = visited.has(node.name);
+      if (!wasVisited) {
+        visited.add(node.name);
+      }
 
       setAnalyzingFunctions((prev) => new Set([...prev, node.name]));
 
@@ -291,18 +402,21 @@ function AnalyzeContent() {
       // Phase 3: ask AI to suggest files
       if (!snippet) {
         try {
+          const locateRequest = {
+            repoName: info.fullName,
+            functionName: node.name,
+            callerFile: parentFile,
+            allFilePaths,
+          };
+          addLog(makeLogEntry("info", `函数定位：开始定位 ${node.name}`, { request: locateRequest }));
           const locRes = await fetch("/api/analyze/callgraph/locate", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              repoName: info.fullName,
-              functionName: node.name,
-              callerFile: parentFile,
-              allFilePaths,
-            }),
+            body: JSON.stringify(locateRequest),
           });
           if (locRes.ok) {
             const locData = await locRes.json() as { suggestedFiles: string[] };
+            addLog(makeLogEntry("info", `函数定位：${node.name} 已返回候选文件`, { response: locData }));
             for (const suggestedFile of locData.suggestedFiles) {
               const content = await fetchContent(suggestedFile);
               if (content) {
@@ -310,29 +424,66 @@ function AnalyzeContent() {
                 if (snippet) { foundFile = suggestedFile; break; }
               }
             }
+          } else {
+            const locError = await locRes.json() as { error?: string };
+            addLog(makeLogEntry("warning", `函数定位失败：${node.name} — ${locError.error ?? "unknown error"}`, { response: locError }));
           }
         } catch { /* ignore locate errors */ }
       }
 
-      setAnalyzingFunctions((prev) => { const s = new Set(prev); s.delete(node.name); return s; });
+      if (!snippet) {
+        setAnalyzingFunctions((prev) => { const s = new Set(prev); s.delete(node.name); return s; });
+        continue;
+      }
 
-      if (!snippet) continue;
+      const cacheKey = getFunctionCacheKey(node.name, foundFile);
+      const cachedChildren = drilldownCacheRef.current.get(cacheKey);
+      addLog(makeLogEntry("info", `递归分析缓存：${node.name} — ${cachedChildren ? "命中" : "未命中"}`));
+
+      if (cachedChildren) {
+        if (cachedChildren.length > 0) {
+          localResult = addChildrenToNode(localResult, pathIndices, cachedChildren);
+          setCallgraphResult(localResult);
+          cachedChildren
+            .filter((c) => c.drillDown === 1 && !visited.has(c.name))
+            .forEach((child, index) => {
+              queue.push({
+                node: child,
+                depth: depth + 1,
+                parentFile: child.likelyFile ?? foundFile,
+                pathIndices: [...pathIndices, index],
+              });
+            });
+        }
+        setAnalyzingFunctions((prev) => { const s = new Set(prev); s.delete(node.name); return s; });
+        continue;
+      }
+
+      if (wasVisited) {
+        setAnalyzingFunctions((prev) => { const s = new Set(prev); s.delete(node.name); return s; });
+        continue;
+      }
 
       // Expand: get sub-functions of this node
       try {
+        const expandRequest = {
+          repoName: info.fullName,
+          functionName: node.name,
+          filePath: foundFile,
+          functionSnippet: snippet,
+          allFilePaths,
+          locale: descriptionLocale,
+        };
+        addLog(makeLogEntry("info", `递归分析：开始分析 ${node.name} 的关键子函数`, { request: expandRequest }));
         const expandRes = await fetch("/api/analyze/callgraph/expand", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            repoName: info.fullName,
-            functionName: node.name,
-            filePath: foundFile,
-            functionSnippet: snippet,
-            allFilePaths,
-          }),
+          body: JSON.stringify(expandRequest),
         });
         if (expandRes.ok) {
           const expandData = await expandRes.json() as { children: CallgraphNode[] };
+          drilldownCacheRef.current.set(cacheKey, expandData.children);
+          addLog(makeLogEntry("success", `递归分析：${node.name} AI 返回 ${expandData.children.length} 个关键子函数`, { response: expandData }));
           if (expandData.children.length > 0) {
             localResult = addChildrenToNode(localResult, pathIndices, expandData.children);
             setCallgraphResult(localResult);
@@ -340,7 +491,7 @@ function AnalyzeContent() {
               `递归分析：${node.name} → ${expandData.children.length} 个子函数`));
 
             expandData.children
-              .filter((c) => c.drillDown >= 0 && !visited.has(c.name))
+              .filter((c) => c.drillDown === 1 && !visited.has(c.name))
               .forEach((child, i) => {
                 queue.push({
                   node: child,
@@ -350,8 +501,60 @@ function AnalyzeContent() {
                 });
               });
           }
+        } else {
+          const expandError = await expandRes.json() as { error?: string };
+          addLog(makeLogEntry("warning", `递归分析失败：${node.name} — ${expandError.error ?? "unknown error"}`, { response: expandError }));
         }
       } catch { /* ignore expand errors */ }
+      setAnalyzingFunctions((prev) => { const s = new Set(prev); s.delete(node.name); return s; });
+    }
+    return localResult;
+  }, [addLog]);
+
+  const runModuleAnalysis = useCallback(async (
+    graphResult: CallgraphResult,
+    info: RepoInfo & { stars?: number },
+  ) => {
+    const currentAnalysis = analysisResultRef.current;
+    if (!currentAnalysis) return null;
+
+    setWorkflowState({ state: "working", stage: "modules" });
+    addLog(makeLogEntry("info", "模块划分：开始聚合函数节点并分析功能模块…"));
+
+    try {
+      const res = await fetch("/api/analyze/modules", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          repoName: info.fullName,
+          repoUrl: `https://github.com/${info.fullName}`,
+          locale: analysisLocaleRef.current,
+          summary: currentAnalysis.summary,
+          description: info.description,
+          languages: currentAnalysis.languages,
+          techStack: currentAnalysis.techStack,
+          functions: flattenCallgraphFunctions(graphResult),
+        }),
+      });
+      const data = await res.json();
+
+      if (!res.ok) {
+        const msg = (data as { error?: string }).error ?? "模块划分失败";
+        addLog(makeLogEntry("warning", `模块划分失败：${msg}`));
+        return null;
+      }
+
+      const result = data as ModuleAnalysisResult;
+      setModuleAnalysis(result);
+      setSelectedModuleId(null);
+      addLog(makeLogEntry(
+        "success",
+        `模块划分完成：共 ${result.modules.length} 个功能模块${result.savedFilePath ? `，已保存到 ${result.savedFilePath}` : ""}`,
+      ));
+      return result;
+    } catch {
+      addLog(makeLogEntry("warning", "模块划分：网络请求失败"));
+      return null;
     }
   }, [addLog]);
 
@@ -359,24 +562,31 @@ function AnalyzeContent() {
     confirmedPath: string,
     fileContent: string,
     info: RepoInfo & { stars?: number },
+    descriptionLocale: AnalysisLocale = callgraphDescriptionLocaleRef.current,
   ) => {
+    confirmedEntryContextRef.current = { path: confirmedPath, fileContent, info };
+    setWorkflowState({ state: "working", stage: "callgraph" });
     setCallgraphLoading(true);
     setCallgraphResult(null);
     setAnalyzingFunctions(new Set());
+    drilldownCacheRef.current.clear();
 
     const allFilePaths = filterCodeFiles(info.tree);
     addLog(makeLogEntry("info", `调用图分析：开始分析 ${confirmedPath} 的关键子函数…`));
 
     try {
+      const callgraphRequest = {
+        repoName: info.fullName,
+        filePath: confirmedPath,
+        fileContent,
+        allFilePaths,
+        locale: descriptionLocale,
+      };
+      addLog(makeLogEntry("info", `调用图分析：请求关键子函数 ${confirmedPath}`, { request: callgraphRequest }));
       const res = await fetch("/api/analyze/callgraph", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          repoName: info.fullName,
-          filePath: confirmedPath,
-          fileContent,
-          allFilePaths,
-        }),
+        body: JSON.stringify(callgraphRequest),
       });
       const data = await res.json();
 
@@ -391,23 +601,98 @@ function AnalyzeContent() {
       addLog(makeLogEntry(
         "success",
         `调用图分析完成：${result.rootFunction} 识别到 ${result.children.length} 个关键子函数`,
+        { response: data },
       ));
 
-      // Kick off recursive analysis
-      runRecursiveAnalysis(result, info, fileContent);
+      setWorkflowState({ state: "working", stage: "recursive" });
+      const finalResult = await runRecursiveAnalysis(result, info, fileContent, descriptionLocale);
+      setCallgraphResult(finalResult);
+      callgraphCacheRef.current[descriptionLocale] = finalResult;
+
+      if (descriptionLocale === callgraphDescriptionLocaleRef.current && !moduleAnalysisRef.current) {
+        await runModuleAnalysis(finalResult, info);
+      }
+      setWorkflowState({ state: "completed", stage: "complete" });
+      if (descriptionLocale === "zh") {
+        triggerSave(info);
+      }
     } catch {
+      setWorkflowState({ state: "error", stage: "error" });
       addLog(makeLogEntry("warning", "调用图分析：网络请求失败"));
     } finally {
       setCallgraphLoading(false);
     }
-  }, [addLog, runRecursiveAnalysis]);
+  }, [addLog, runModuleAnalysis, runRecursiveAnalysis, triggerSave]);
+
+  const resolveConfirmedEntryContext = useCallback(async () => {
+    if (confirmedEntryContextRef.current) {
+      return confirmedEntryContextRef.current;
+    }
+
+    if (!repoInfo) {
+      return null;
+    }
+
+    const confirmedPath = Object.entries(entryCheckResultsRef.current).find(([, result]) => result.isEntry)?.[0];
+    if (!confirmedPath) {
+      return null;
+    }
+
+    const node = findNodeByPath(repoInfo.tree, confirmedPath);
+    if (!node || node.type !== "blob") {
+      return null;
+    }
+
+    try {
+      const params = new URLSearchParams({
+        owner: repoInfo.owner,
+        repo: repoInfo.repo,
+        path: node.path,
+        sha: node.sha,
+      });
+      const res = await fetch(`/api/github/file?${params}`);
+      const data = await res.json() as { content?: string; error?: string };
+      if (!res.ok || !data.content) {
+        return null;
+      }
+
+      const context = {
+        path: confirmedPath,
+        fileContent: data.content,
+        info: repoInfo,
+      };
+      confirmedEntryContextRef.current = context;
+      return context;
+    } catch {
+      return null;
+    }
+  }, [repoInfo]);
+
+  const handleCallgraphDescriptionLocaleChange = useCallback(async (locale: AnalysisLocale) => {
+    setCallgraphDescriptionLocale(locale);
+
+    const cached = callgraphCacheRef.current[locale];
+    if (cached) {
+      setCallgraphResult(cached);
+      return;
+    }
+
+    const entryContext = await resolveConfirmedEntryContext();
+    if (!entryContext) {
+      return;
+    }
+
+    await runCallgraphAnalysis(entryContext.path, entryContext.fileContent, entryContext.info, locale);
+  }, [resolveConfirmedEntryContext, runCallgraphAnalysis]);
 
   const runEntryAnalysis = useCallback(async (
     entryFiles: AnalysisResult["entryFiles"],
     info: RepoInfo & { stars?: number },
     languages: AnalysisResult["languages"],
   ) => {
+    setWorkflowState({ state: "working", stage: "entry" });
     setEntryCheckResults({});
+    let confirmedEntryFound = false;
 
     for (const entry of entryFiles) {
       setCheckingEntryPath(entry.path);
@@ -479,8 +764,9 @@ function AnalyzeContent() {
         ));
 
         if (result.isEntry) {
+          confirmedEntryFound = true;
           // Kick off callgraph analysis with the confirmed entry file content
-          runCallgraphAnalysis(entry.path, truncated, info);
+          await runCallgraphAnalysis(entry.path, truncated, info);
           break;
         }
       } catch {
@@ -489,9 +775,13 @@ function AnalyzeContent() {
     }
 
     setCheckingEntryPath(null);
+    if (!confirmedEntryFound) {
+      setWorkflowState({ state: "completed", stage: "complete" });
+    }
   }, [addLog, runCallgraphAnalysis]);
 
-  const fetchAnalysis = useCallback(async (info: RepoInfo, locale: AnalysisLocale) => {
+  const fetchAnalysis = useCallback(async (info: RepoInfo & { stars?: number }, locale: AnalysisLocale) => {
+    setWorkflowState({ state: "working", stage: "analysis" });
     const allPaths = filterCodeFiles(info.tree);
 
     addLog(makeLogEntry(
@@ -499,7 +789,10 @@ function AnalyzeContent() {
       `代码文件过滤：共 ${allPaths.length} 个代码文件（已排除图片、lock 文件等）`
     ));
 
-    if (allPaths.length === 0) return;
+    if (allPaths.length === 0) {
+      setWorkflowState({ state: "completed", stage: "complete" });
+      return;
+    }
 
     const requestPayload = {
       repoName: info.fullName,
@@ -525,6 +818,18 @@ function AnalyzeContent() {
           repoName: info.fullName,
           filePaths: allPaths,
           locale,
+          repoContext: {
+            description: info.description,
+            homepage: info.homepage,
+            primaryLanguage: info.primaryLanguage,
+            license: info.license,
+            topics: info.topics,
+            branch: info.branch,
+            stars: info.stars,
+            forks: info.forks,
+            openIssues: info.openIssues,
+            updatedAt: info.updatedAt,
+          },
         }),
       });
       const data = await res.json();
@@ -532,6 +837,7 @@ function AnalyzeContent() {
       if (!res.ok) {
         const msg = (data as { error?: string }).error || "分析失败";
         setAnalysisError(msg);
+        setWorkflowState({ state: "error", stage: "error" });
         addLog(makeLogEntry("error", `AI 分析失败：${msg}`));
         return;
       }
@@ -549,10 +855,13 @@ function AnalyzeContent() {
 
       if (result.entryFiles.length > 0) {
         runEntryAnalysis(result.entryFiles, info as RepoInfo & { stars?: number }, result.languages);
+      } else {
+        setWorkflowState({ state: "completed", stage: "complete" });
       }
     } catch {
       const msg = "网络错误，AI 分析请求失败";
       setAnalysisError(msg);
+      setWorkflowState({ state: "error", stage: "error" });
       addLog(makeLogEntry("error", msg));
     } finally {
       setAnalysisLoading(false);
@@ -560,9 +869,12 @@ function AnalyzeContent() {
   }, [addLog, runEntryAnalysis]);
 
   const fetchTree = useCallback(async (url: string) => {
+    analyzeUrlRef.current = url;
+    setWorkflowState({ state: "working", stage: "tree" });
     const parsed = parseGithubUrl(url);
     if (!parsed) {
       setInputError(text.invalidUrl);
+      setWorkflowState({ state: "error", stage: "error" });
       addLog(makeLogEntry("error", `GitHub URL 校验失败：无效的地址格式 "${url}"`));
       return;
     }
@@ -584,8 +896,14 @@ function AnalyzeContent() {
     setEntryCheckResults({});
     setCheckingEntryPath(null);
     setCallgraphResult(null);
+    setCallgraphDescriptionLocale("zh");
     setCallgraphLoading(false);
     setAnalyzingFunctions(new Set());
+    setModuleAnalysis(null);
+    setSelectedModuleId(null);
+    drilldownCacheRef.current.clear();
+    callgraphCacheRef.current = {};
+    confirmedEntryContextRef.current = null;
     setLogs([makeLogEntry("success", `GitHub URL 校验通过：${parsed.owner}/${parsed.repo}`)]);
 
     try {
@@ -595,6 +913,7 @@ function AnalyzeContent() {
       if (!res.ok) {
         const msg = (data as { error?: string }).error || text.repoLoadFailed;
         setTreeError(msg);
+        setWorkflowState({ state: "error", stage: "error" });
         addLog(makeLogEntry("error", `仓库获取失败：${msg}`));
         return;
       }
@@ -612,19 +931,70 @@ function AnalyzeContent() {
     } catch {
       const msg = text.networkRetry;
       setTreeError(msg);
+      setWorkflowState({ state: "error", stage: "error" });
       addLog(makeLogEntry("error", msg));
     } finally {
       setTreeLoading(false);
     }
   }, [addLog, fetchAnalysis, text.invalidUrl, text.networkRetry, text.repoLoadFailed]);
 
+  const restoreFromRecord = useCallback((record: AnalysisRecord) => {
+    setInputUrl(record.url);
+    setInputError("");
+    setIsRestoredFromHistory(true);
+    setCurrentRecordId(record.id);
+
+    const info = {
+      owner: record.repoMeta.owner,
+      repo: record.repoMeta.repo,
+      branch: record.repoMeta.branch,
+      fullName: record.repoMeta.fullName,
+      description: record.repoMeta.description,
+      homepage: record.repoMeta.homepage,
+      primaryLanguage: record.repoMeta.primaryLanguage,
+      license: record.repoMeta.license,
+      topics: record.repoMeta.topics,
+      stars: record.repoMeta.stars,
+      forks: record.repoMeta.forks,
+      openIssues: record.repoMeta.openIssues,
+      updatedAt: record.repoMeta.updatedAt,
+      tree: record.fileTree,
+    };
+    setRepoInfo(info);
+    setTreeLoading(false);
+    setTreeError(null);
+    setSelectedPath(null);
+    setFileContent(null);
+    setAnalysisResult(record.analysisResult);
+    setAnalysisCache({ [analysisLocaleRef.current]: record.analysisResult });
+    setAnalysisError(null);
+    setAnalysisLoading(false);
+    setEntryCheckResults(record.entryCheckResults);
+    setCheckingEntryPath(null);
+    setCallgraphResult(record.callgraphResult);
+    setCallgraphDescriptionLocale("zh");
+    setModuleAnalysis(record.moduleAnalysis ?? null);
+    setSelectedModuleId(null);
+    setCallgraphLoading(false);
+    setAnalyzingFunctions(new Set());
+    callgraphCacheRef.current = {};
+    confirmedEntryContextRef.current = null;
+    setLogs(record.logs);
+    setWorkflowState({ state: "completed", stage: "complete" });
+  }, []);
+
   useEffect(() => {
     const url = searchParams.get("url");
+    const historyId = searchParams.get("historyId");
+    if (historyId) {
+      const record = getRecordById(historyId);
+      if (record) { restoreFromRecord(record); return; }
+    }
     if (url) {
       setInputUrl(url);
       fetchTree(url);
     }
-  }, [fetchTree, searchParams]);
+  }, [fetchTree, searchParams, restoreFromRecord]);
 
   const handleAnalyze = () => {
     const trimmed = inputUrl.trim();
@@ -632,6 +1002,8 @@ function AnalyzeContent() {
       setInputError(text.emptyUrl);
       return;
     }
+    setIsRestoredFromHistory(false);
+    setCurrentRecordId(null);
     router.replace(`/analyze?url=${encodeURIComponent(trimmed)}`);
     fetchTree(trimmed);
   };
@@ -726,6 +1098,37 @@ function AnalyzeContent() {
               <GitBranch size={11} />
               {repoInfo.branch}
             </span>
+            {isRestoredFromHistory && (
+              <button
+                onClick={() => {
+                  setIsRestoredFromHistory(false);
+                  setCurrentRecordId(null);
+                  fetchTree(inputUrl);
+                }}
+                className="flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full border transition-colors"
+                style={{ color: "var(--accent)", borderColor: "var(--accent)" }}
+                title="Re-analyze this repository"
+              >
+                <RefreshCcw size={11} />
+                Re-analyze
+              </button>
+            )}
+            {currentRecordId !== null && (
+              <button
+                onClick={() => {
+                  const record = getRecordById(currentRecordId);
+                  if (!record) return;
+                  const md = buildMarkdown(record);
+                  downloadMarkdown(`panocode-${repoInfo.fullName.replace("/", "-")}.md`, md);
+                }}
+                className="flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full border transition-colors"
+                style={{ color: "var(--muted)", borderColor: "var(--border)" }}
+                title="Export analysis as Markdown"
+              >
+                <Download size={11} />
+                Export MD
+              </button>
+            )}
           </>
         )}
       </header>
@@ -782,26 +1185,26 @@ function AnalyzeContent() {
             locale={analysisLocale}
             mode={logPanelMode}
             onModeChange={setLogPanelMode}
+            workflowStatus={{
+              state: workflowState.state,
+              label: WORKFLOW_LABELS[analysisLocale][workflowState.stage],
+            }}
           />
 
           {/* Scrollable bottom: description + AI analysis */}
           <div className="flex-1 overflow-auto flex flex-col">
-            {repoInfo?.description && (
-              <div className="px-3 py-2 border-b shrink-0" style={{ borderColor: "var(--border)" }}>
-                <p className="text-xs" style={{ color: "var(--muted)", lineHeight: "1.5" }}>
-                  {repoInfo.description}
-                </p>
-              </div>
-            )}
-
             {(analysisLoading || analysisError || analysisResult) && (
               <AnalysisPanel
                 loading={analysisLoading}
                 error={analysisError}
                 result={analysisResult}
+                repoInfo={repoInfo}
+                moduleAnalysis={moduleAnalysis}
+                selectedModuleId={selectedModuleId}
                 locale={analysisLocale}
                 onLocaleChange={handleAnalysisLocaleChange}
                 onFileClick={handleEntryFileClick}
+                onModuleSelect={setSelectedModuleId}
                 entryCheckResults={entryCheckResults}
                 checkingEntryPath={checkingEntryPath}
               />
@@ -869,7 +1272,7 @@ function AnalyzeContent() {
         </div>
 
         {/* Right panel — code viewer */}
-        <div className="flex-1 flex flex-col overflow-hidden" style={{ background: "#0d1117", minWidth: 280 }}>
+        <div className="flex-1 flex flex-col overflow-hidden" style={{ background: "var(--code-bg)", minWidth: 280 }}>
           <CodePanel
             path={selectedPath}
             content={fileContent}
@@ -897,7 +1300,11 @@ function AnalyzeContent() {
           <PanoramaPanel
             loading={callgraphLoading}
             result={callgraphResult}
+            moduleAnalysis={moduleAnalysis}
+            selectedModuleId={selectedModuleId}
             locale={analysisLocale}
+            descriptionLocale={callgraphDescriptionLocale}
+            onDescriptionLocaleChange={handleCallgraphDescriptionLocaleChange}
             onFileClick={handleEntryFileClick}
             analyzingFunctions={analyzingFunctions}
           />

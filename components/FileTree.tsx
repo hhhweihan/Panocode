@@ -52,8 +52,8 @@ function FileNode({ node, depth, selectedPath, onFileClick }: FileNodeProps) {
             {open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
           </span>
           {open
-            ? <FolderOpen size={14} className="shrink-0 text-[#58a6ff]" />
-            : <Folder size={14} className="shrink-0 text-[#58a6ff]" />
+            ? <FolderOpen size={14} className="shrink-0 text-[var(--accent)]" />
+            : <Folder size={14} className="shrink-0 text-[var(--accent)]" />
           }
           <span className="truncate">{node.name}</span>
         </button>

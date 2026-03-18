@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
+const AnalysisLocaleSchema = z.enum(["zh", "en"]);
+
 // ── Zod schemas ───────────────────────────────────────────────────────────────
 
 const CallgraphNodeSchema = z.object({
@@ -67,10 +69,15 @@ export async function POST(req: NextRequest) {
     filePath: string;
     functionSnippet: string;
     allFilePaths: string[];
+    locale?: "zh" | "en";
   };
 
   const { repoName, functionName, filePath, functionSnippet, allFilePaths } = body;
+  const locale = AnalysisLocaleSchema.catch("zh").parse(body.locale);
   const fileListSample = allFilePaths.slice(0, 300).join("\n");
+  const languageInstruction = locale === "zh"
+    ? "Write description in Simplified Chinese. Keep code identifiers, file paths, library names, and technical proper nouns in their standard original form when appropriate."
+    : "Write description in English.";
 
   const prompt = `You are analyzing a specific function in a GitHub repository to identify its key direct callees.
 
@@ -86,13 +93,22 @@ ${functionSnippet}
 Repository file paths (for locating callees):
 ${fileListSample}
 
-Task: Identify up to 20 key functions, methods, or modules directly called from this function that are significant to understanding the project's architecture.
+Task: Identify up to 20 key functions, methods, or modules directly called from this function that are truly significant to understanding the project's core architecture and feature flow.
+
+Strict filtering rules:
+- Return only callees that meaningfully advance the core feature workflow, orchestrate important subsystems, or contain important domain logic.
+- Do NOT return routine data-structure operations, container manipulation, string operations, formatting/parsing helpers, serialization/deserialization helpers, logging calls, trivial utility wrappers, getters/setters, constructors/destructors, or low-level library calls unless they are clearly central to the project's core behavior.
+- Prefer fewer, higher-signal callees over exhaustive coverage.
+- For object-oriented languages, return the fully qualified callable name when possible, for example ClassName::methodName, Namespace::ClassName::methodName, or ClassName.methodName.
 
 For each one provide:
 - name: the exact function/class/module name as it appears in source
 - likelyFile: best-guess relative file path from the repo root (pick from the file list above; use null if purely external/stdlib/third-party)
 - drillDown: 1 if this is a substantial internal sub-system worth further analysis, 0 if uncertain, -1 if trivial/external/stdlib
 - description: one sentence explaining what it does
+
+Language requirement:
+- ${languageInstruction}
 
 Return JSON only. No markdown fences. Exact shape:
 {

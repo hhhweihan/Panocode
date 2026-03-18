@@ -3,6 +3,8 @@
 import { Loader2, AlertCircle, Sparkles, FileCode, CheckCircle2, XCircle } from "lucide-react";
 import type { AnalysisResult } from "@/app/api/analyze/route";
 import type { EntryCheckResult } from "@/app/api/analyze/entry/route";
+import type { RepoInfo } from "@/lib/github";
+import type { ModuleAnalysisResult } from "@/lib/moduleAnalysis";
 
 export type AnalysisLocale = "zh" | "en";
 
@@ -24,9 +26,13 @@ interface AnalysisPanelProps {
   loading: boolean;
   error: string | null;
   result: AnalysisResult | null;
+  repoInfo?: RepoInfo & { stars?: number } | null;
+  moduleAnalysis?: ModuleAnalysisResult | null;
+  selectedModuleId?: string | null;
   locale: AnalysisLocale;
   onLocaleChange: (locale: AnalysisLocale) => void;
   onFileClick: (path: string) => void;
+  onModuleSelect?: (moduleId: string | null) => void;
   entryCheckResults?: Record<string, EntryCheckResult>;
   checkingEntryPath?: string | null;
 }
@@ -36,6 +42,20 @@ const PANEL_TEXT = {
     loading: "AI 分析中...",
     errorTitle: "分析失败",
     title: "AI 分析",
+    repoDetails: "仓库详情",
+    description: "简介",
+    branch: "分支",
+    stars: "Stars",
+    forks: "Forks",
+    openIssues: "Issues",
+    homepage: "主页",
+    license: "许可证",
+    primaryLanguage: "主语言",
+    topics: "主题",
+    updatedAt: "更新于",
+    modules: "功能模块",
+    allModules: "全部模块",
+    moduleFile: "工程文件",
     languages: "语言",
     techStack: "技术栈",
     entryFiles: "候选入口文件",
@@ -55,6 +75,20 @@ const PANEL_TEXT = {
     loading: "Analyzing...",
     errorTitle: "Analysis Failed",
     title: "AI Analysis",
+    repoDetails: "Repository Details",
+    description: "Description",
+    branch: "Branch",
+    stars: "Stars",
+    forks: "Forks",
+    openIssues: "Issues",
+    homepage: "Homepage",
+    license: "License",
+    primaryLanguage: "Primary Language",
+    topics: "Topics",
+    updatedAt: "Updated",
+    modules: "Modules",
+    allModules: "All Modules",
+    moduleFile: "Saved File",
     languages: "Languages",
     techStack: "Tech Stack",
     entryFiles: "Candidate Entry Files",
@@ -76,9 +110,13 @@ export default function AnalysisPanel({
   loading,
   error,
   result,
+  repoInfo,
+  moduleAnalysis,
+  selectedModuleId,
   locale,
   onLocaleChange,
   onFileClick,
+  onModuleSelect,
   entryCheckResults = {},
   checkingEntryPath,
 }: AnalysisPanelProps) {
@@ -111,6 +149,14 @@ export default function AnalysisPanel({
 
   if (!result) return null;
 
+  const updatedAtLabel = repoInfo?.updatedAt
+    ? new Date(repoInfo.updatedAt).toLocaleDateString(locale === "zh" ? "zh-CN" : "en-US", {
+        year: "numeric",
+        month: "short",
+        day: "numeric",
+      })
+    : null;
+
   return (
     <div className="flex flex-col gap-4 px-3 py-3">
       {/* Header + locale switcher */}
@@ -132,7 +178,7 @@ export default function AnalysisPanel({
                 key={value}
                 onClick={() => onLocaleChange(value)}
                 className="rounded px-2 py-0.5 text-[11px] transition-colors"
-                style={{ background: active ? "var(--accent)" : "transparent", color: active ? "#0a0e1a" : "var(--muted)" }}
+                style={{ background: active ? "var(--accent)" : "transparent", color: active ? "var(--accent-contrast)" : "var(--muted)" }}
               >
                 {value === "zh" ? text.localeZh : text.localeEn}
               </button>
@@ -146,6 +192,159 @@ export default function AnalysisPanel({
         <p className="text-xs leading-relaxed" style={{ color: "var(--muted)" }}>
           {result.summary}
         </p>
+      )}
+
+      {/* Repo Details */}
+      {repoInfo && (
+        <div className="flex flex-col gap-2">
+          <span className="text-xs font-medium" style={{ color: "var(--text)" }}>{text.repoDetails}</span>
+          <div className="flex flex-col gap-2 rounded-lg border p-2.5" style={{ borderColor: "var(--border)", background: "var(--panel-2)" }}>
+            {repoInfo.description && (
+              <div className="flex flex-col gap-1">
+                <span className="text-[11px] uppercase tracking-wider" style={{ color: "var(--muted)" }}>{text.description}</span>
+                <p className="text-xs leading-relaxed" style={{ color: "var(--text)" }}>{repoInfo.description}</p>
+              </div>
+            )}
+
+            <div className="flex flex-wrap gap-1.5">
+              <span className="text-xs px-2 py-1 rounded-full border" style={{ color: "var(--muted)", borderColor: "var(--border)" }}>
+                {text.branch}: {repoInfo.branch}
+              </span>
+              {typeof repoInfo.stars === "number" && (
+                <span className="text-xs px-2 py-1 rounded-full border" style={{ color: "var(--muted)", borderColor: "var(--border)" }}>
+                  {text.stars}: {repoInfo.stars.toLocaleString()}
+                </span>
+              )}
+              {typeof repoInfo.forks === "number" && (
+                <span className="text-xs px-2 py-1 rounded-full border" style={{ color: "var(--muted)", borderColor: "var(--border)" }}>
+                  {text.forks}: {repoInfo.forks.toLocaleString()}
+                </span>
+              )}
+              {typeof repoInfo.openIssues === "number" && (
+                <span className="text-xs px-2 py-1 rounded-full border" style={{ color: "var(--muted)", borderColor: "var(--border)" }}>
+                  {text.openIssues}: {repoInfo.openIssues.toLocaleString()}
+                </span>
+              )}
+              {repoInfo.primaryLanguage && (
+                <span className="text-xs px-2 py-1 rounded-full border" style={{ color: "var(--muted)", borderColor: "var(--border)" }}>
+                  {text.primaryLanguage}: {repoInfo.primaryLanguage}
+                </span>
+              )}
+              {repoInfo.license && (
+                <span className="text-xs px-2 py-1 rounded-full border" style={{ color: "var(--muted)", borderColor: "var(--border)" }}>
+                  {text.license}: {repoInfo.license}
+                </span>
+              )}
+              {updatedAtLabel && (
+                <span className="text-xs px-2 py-1 rounded-full border" style={{ color: "var(--muted)", borderColor: "var(--border)" }}>
+                  {text.updatedAt}: {updatedAtLabel}
+                </span>
+              )}
+            </div>
+
+            {repoInfo.homepage && (
+              <div className="flex flex-col gap-1 min-w-0">
+                <span className="text-[11px] uppercase tracking-wider" style={{ color: "var(--muted)" }}>{text.homepage}</span>
+                <a
+                  href={repoInfo.homepage}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-xs truncate"
+                  style={{ color: "var(--accent)" }}
+                >
+                  {repoInfo.homepage}
+                </a>
+              </div>
+            )}
+
+            {repoInfo.topics && repoInfo.topics.length > 0 && (
+              <div className="flex flex-col gap-1">
+                <span className="text-[11px] uppercase tracking-wider" style={{ color: "var(--muted)" }}>{text.topics}</span>
+                <div className="flex flex-wrap gap-1.5">
+                  {repoInfo.topics.map((topic) => (
+                    <span
+                      key={topic}
+                      className="text-xs px-2 py-0.5 rounded-full border"
+                      style={{ color: "var(--muted)", borderColor: "var(--border)", background: "var(--panel)" }}
+                    >
+                      {topic}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {moduleAnalysis && moduleAnalysis.modules.length > 0 && (
+        <div className="flex flex-col gap-2">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-xs font-medium" style={{ color: "var(--text)" }}>{text.modules}</span>
+            {moduleAnalysis.savedFilePath && (
+              <span className="text-[11px] truncate" style={{ color: "var(--muted)" }} title={moduleAnalysis.savedFilePath}>
+                {text.moduleFile}: {moduleAnalysis.savedFilePath}
+              </span>
+            )}
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            <button
+              onClick={() => onModuleSelect?.(null)}
+              className="text-xs px-2 py-1 rounded-full border transition-colors"
+              style={{
+                color: selectedModuleId === null ? "var(--text)" : "var(--muted)",
+                borderColor: selectedModuleId === null ? "var(--accent)" : "var(--border)",
+                background: selectedModuleId === null ? "color-mix(in srgb, var(--accent) 18%, transparent)" : "transparent",
+              }}
+            >
+              {text.allModules}
+            </button>
+            {moduleAnalysis.modules.map((moduleItem) => {
+              const active = selectedModuleId === moduleItem.id;
+              return (
+                <button
+                  key={moduleItem.id}
+                  onClick={() => onModuleSelect?.(active ? null : moduleItem.id)}
+                  className="text-xs px-2 py-1 rounded-full border transition-colors"
+                  title={`${moduleItem.description} (${moduleItem.functions.length})`}
+                  style={{
+                    color: active ? "#ffffff" : moduleItem.color,
+                    borderColor: moduleItem.color,
+                    background: active ? moduleItem.color : "transparent",
+                  }}
+                >
+                  {moduleItem.name} ({moduleItem.functions.length})
+                </button>
+              );
+            })}
+          </div>
+          <div className="flex flex-col gap-1.5">
+            {moduleAnalysis.modules.map((moduleItem) => (
+              <div
+                key={moduleItem.id}
+                className="rounded-md border px-2 py-1.5"
+                style={{
+                  borderColor: selectedModuleId === moduleItem.id ? moduleItem.color : "var(--border)",
+                  background: selectedModuleId === moduleItem.id
+                    ? `color-mix(in srgb, ${moduleItem.color} 12%, transparent)`
+                    : "var(--panel-2)",
+                }}
+              >
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-medium" style={{ color: moduleItem.color }}>
+                    {moduleItem.name}
+                  </span>
+                  <span className="text-[11px]" style={{ color: "var(--muted)" }}>
+                    {moduleItem.functions.length}
+                  </span>
+                </div>
+                <p className="mt-1 text-xs leading-relaxed" style={{ color: "var(--muted)" }}>
+                  {moduleItem.description}
+                </p>
+              </div>
+            ))}
+          </div>
+        </div>
       )}
 
       {/* Languages */}

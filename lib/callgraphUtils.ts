@@ -1,31 +1,58 @@
 import type { CallgraphNode, CallgraphResult } from "@/app/api/analyze/callgraph/route";
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function parseQualifiedFunctionName(name: string): {
+  fullName: string;
+  ownerName: string | null;
+  methodName: string;
+} {
+  const trimmed = name.trim();
+  const separator = trimmed.includes("::") ? "::" : trimmed.includes(".") ? "." : null;
+
+  if (!separator) {
+    return { fullName: trimmed, ownerName: null, methodName: trimmed };
+  }
+
+  const parts = trimmed.split(separator).filter(Boolean);
+  return {
+    fullName: trimmed,
+    ownerName: parts.slice(0, -1).join(separator) || null,
+    methodName: parts[parts.length - 1] ?? trimmed,
+  };
+}
+
 /**
  * Build a regex that matches common function/method/class definition patterns for `name`.
  * Covers Python, JS/TS, Go, Java, C#, C++, Ruby, PHP, Rust.
  */
 export function buildFunctionPattern(name: string): RegExp {
-  const esc = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const patterns = [
-    // Python: def name(  or  async def name(
-    `(?:async\\s+)?def\\s+${esc}\\s*\\(`,
-    // JS/TS: function name(  or  async function name(  or  function* name(
-    `(?:async\\s+)?function\\s*\\*?\\s+${esc}\\s*[(<]`,
-    // JS/TS: const/let/var name = (...) =>  or  const name = function
-    `(?:const|let|var)\\s+${esc}\\s*=\\s*(?:async\\s+)?(?:\\([^)]*\\)|[\\w]+)\\s*=>`,
-    // Go: func name(  or  func (recv) name(
-    `func(?:\\s+\\([^)]*\\))?\\s+${esc}\\s*\\(`,
-    // Ruby: def name  or  def self.name
-    `def\\s+(?:self\\.)?${esc}(?:[\\s(<]|$)`,
-    // PHP: function name(
-    `function\\s+${esc}\\s*\\(`,
-    // Rust: fn name(  or  pub fn name(  or  pub(crate) async fn name(
-    `(?:pub(?:\\s*\\([^)]*\\))?\\s+)?(?:async\\s+)?fn\\s+${esc}\\s*[<(]`,
-    // Class definition: class Name  or  class Name<  or  class Name(
-    `class\\s+${esc}[\\s<{(:]`,
-    // Java/C#/C++ method: returnType name(
-    `[\\w<>\\[\\]*&]+\\s+${esc}\\s*\\(`,
-  ];
+  const { fullName, methodName } = parseQualifiedFunctionName(name);
+  const candidates = Array.from(new Set([fullName, methodName].filter(Boolean)));
+  const patterns: string[] = [];
+
+  for (const candidate of candidates) {
+    const esc = escapeRegExp(candidate);
+    patterns.push(
+      `(?:async\\s+)?def\\s+${esc}\\s*\\(`,
+      `(?:async\\s+)?function\\s*\\*?\\s+${esc}\\s*[(<]`,
+      `(?:const|let|var)\\s+${esc}\\s*=\\s*(?:async\\s+)?(?:\\([^)]*\\)|[\\w]+)\\s*=>`,
+      `func(?:\\s+\\([^)]*\\))?\\s+${esc}\\s*\\(`,
+      `def\\s+(?:self\\.)?${esc}(?:[\\s(<]|$)`,
+      `function\\s+${esc}\\s*\\(`,
+      `(?:pub(?:\\s*\\([^)]*\\))?\\s+)?(?:async\\s+)?fn\\s+${esc}\\s*[<(]`,
+      `class\\s+${esc}[\\s<{(:]`,
+      `[\\w<>\\[\\]*&:~]+\\s+${esc}\\s*\\(`,
+      `^[^\\S\\r\\n]*(?:(?:public|private|protected|static|virtual|override|async|inline|constexpr|friend|final)\\s+)*(?:get\\s+|set\\s+)?${esc}\\s*\\(`,
+    );
+  }
+
+  if (fullName.includes("::")) {
+    patterns.push(`(?:[\\w:<>,~*&\\s]+)?${escapeRegExp(fullName)}\\s*\\(`);
+  }
+
   return new RegExp(patterns.join("|"), "m");
 }
 
