@@ -32,7 +32,7 @@ interface FileNodeProps {
   node: TreeNode;
   depth: number;
   selectedPath: string | null;
-  onFileClick: (path: string) => void;
+  onFileClick: (node: TreeNode) => void;
 }
 
 function FileNode({ node, depth, selectedPath, onFileClick }: FileNodeProps) {
@@ -76,7 +76,7 @@ function FileNode({ node, depth, selectedPath, onFileClick }: FileNodeProps) {
 
   return (
     <button
-      onClick={() => onFileClick(node.path)}
+      onClick={() => onFileClick(node)}
       className={`flex items-center gap-1.5 w-full text-left px-2 py-0.5 rounded text-sm truncate ${
         isSelected
           ? "bg-[var(--selected)] text-[var(--accent)]"
@@ -94,7 +94,7 @@ function FileNode({ node, depth, selectedPath, onFileClick }: FileNodeProps) {
 interface FileTreeProps {
   tree: TreeNode[];
   selectedPath: string | null;
-  onFileClick: (path: string) => void;
+  onFileClick: (node: TreeNode) => void;
 }
 
 export default function FileTree({ tree, selectedPath, onFileClick }: FileTreeProps) {

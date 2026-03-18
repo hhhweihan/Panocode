@@ -11,6 +11,7 @@ export interface TreeNode {
   name: string;
   path: string;
   type: "blob" | "tree";
+  sha: string;
   children?: TreeNode[];
 }
 
@@ -57,6 +58,7 @@ export function buildTree(items: TreeItem[]): TreeNode[] {
       name,
       path: item.path,
       type: item.type,
+      sha: item.sha,
       children: item.type === "tree" ? [] : undefined,
     };
     nodeMap.set(item.path, node);

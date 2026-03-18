@@ -3,8 +3,11 @@
 import { useEffect, useState, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { parseGithubUrl, type RepoInfo, type TreeNode } from "@/lib/github";
+import { filterCodeFiles } from "@/lib/codeFilter";
 import FileTree from "@/components/FileTree";
 import CodePanel from "@/components/CodePanel";
+import AnalysisPanel from "@/components/AnalysisPanel";
+import type { AnalysisResult } from "@/app/api/analyze/route";
 import {
   Github,
   ArrowRight,
@@ -14,6 +17,17 @@ import {
   AlertCircle,
   Loader2,
 } from "lucide-react";
+
+function findNodeByPath(tree: TreeNode[], targetPath: string): TreeNode | null {
+  for (const node of tree) {
+    if (node.path === targetPath) return node;
+    if (node.children) {
+      const found = findNodeByPath(node.children, targetPath);
+      if (found) return found;
+    }
+  }
+  return null;
+}
 
 function AnalyzeContent() {
   const router = useRouter();
@@ -31,7 +45,10 @@ function AnalyzeContent() {
   const [fileLoading, setFileLoading] = useState(false);
   const [fileError, setFileError] = useState<string | null>(null);
 
-  // Load repo from URL param on mount
+  const [analysisLoading, setAnalysisLoading] = useState(false);
+  const [analysisError, setAnalysisError] = useState<string | null>(null);
+  const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
+
   useEffect(() => {
     const url = searchParams.get("url");
     if (url) {
@@ -39,6 +56,36 @@ function AnalyzeContent() {
       fetchTree(url);
     }
   }, []);
+
+  const fetchAnalysis = async (info: RepoInfo) => {
+    const codePaths = filterCodeFiles(info.tree);
+    if (codePaths.length === 0) return;
+
+    setAnalysisLoading(true);
+    setAnalysisError(null);
+    setAnalysisResult(null);
+
+    try {
+      const res = await fetch("/api/analyze", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          repoName: info.fullName,
+          filePaths: codePaths,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setAnalysisError(data.error || "分析失败");
+        return;
+      }
+      setAnalysisResult(data as AnalysisResult);
+    } catch {
+      setAnalysisError("Network error");
+    } finally {
+      setAnalysisLoading(false);
+    }
+  };
 
   const fetchTree = async (url: string) => {
     const parsed = parseGithubUrl(url);
@@ -52,6 +99,8 @@ function AnalyzeContent() {
     setRepoInfo(null);
     setSelectedPath(null);
     setFileContent(null);
+    setAnalysisResult(null);
+    setAnalysisError(null);
 
     try {
       const res = await fetch(`/api/github/tree?url=${encodeURIComponent(url)}`);
@@ -61,6 +110,8 @@ function AnalyzeContent() {
         return;
       }
       setRepoInfo(data);
+      // Auto-trigger AI analysis after tree loads
+      fetchAnalysis(data);
     } catch {
       setTreeError("Network error — please try again");
     } finally {
@@ -78,9 +129,9 @@ function AnalyzeContent() {
     fetchTree(trimmed);
   };
 
-  const handleFileClick = async (path: string) => {
+  const handleFileClick = async (node: TreeNode) => {
     if (!repoInfo) return;
-    setSelectedPath(path);
+    setSelectedPath(node.path);
     setFileContent(null);
     setFileError(null);
     setFileLoading(true);
@@ -89,8 +140,8 @@ function AnalyzeContent() {
       const params = new URLSearchParams({
         owner: repoInfo.owner,
         repo: repoInfo.repo,
-        path,
-        branch: repoInfo.branch,
+        path: node.path,
+        sha: node.sha,
       });
       const res = await fetch(`/api/github/file?${params}`);
       const data = await res.json();
@@ -103,6 +154,14 @@ function AnalyzeContent() {
       setFileError("Failed to load file content");
     } finally {
       setFileLoading(false);
+    }
+  };
+
+  const handleEntryFileClick = (path: string) => {
+    if (!repoInfo) return;
+    const node = findNodeByPath(repoInfo.tree, path);
+    if (node && node.type === "blob") {
+      handleFileClick(node);
     }
   };
 
@@ -151,13 +210,13 @@ function AnalyzeContent() {
 
       {/* Main 3-column layout */}
       <div className="flex-1 flex overflow-hidden">
-        {/* Left panel — input + reserved space */}
+        {/* Left panel — input + AI analysis */}
         <aside
           className="w-72 shrink-0 flex flex-col border-r overflow-hidden"
           style={{ borderColor: "var(--border)", background: "var(--panel)" }}
         >
-          {/* Repo input section */}
-          <div className="p-3 border-b" style={{ borderColor: "var(--border)" }}>
+          {/* Repo input */}
+          <div className="p-3 border-b shrink-0" style={{ borderColor: "var(--border)" }}>
             <div
               className="flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-sm"
               style={{
@@ -197,16 +256,25 @@ function AnalyzeContent() {
 
           {/* Repo description */}
           {repoInfo?.description && (
-            <div className="px-3 py-2 border-b" style={{ borderColor: "var(--border)" }}>
+            <div className="px-3 py-2 border-b shrink-0" style={{ borderColor: "var(--border)" }}>
               <p className="text-xs" style={{ color: "var(--muted)", lineHeight: "1.5" }}>
                 {repoInfo.description}
               </p>
             </div>
           )}
 
-          {/* Reserved space for future features */}
+          {/* AI Analysis panel — scrollable */}
           <div className="flex-1 overflow-auto">
-            {/* Intentionally left for future additions */}
+            {(analysisLoading || analysisError || analysisResult) && (
+              <div className="border-b" style={{ borderColor: "var(--border)" }}>
+                <AnalysisPanel
+                  loading={analysisLoading}
+                  error={analysisError}
+                  result={analysisResult}
+                  onFileClick={handleEntryFileClick}
+                />
+              </div>
+            )}
           </div>
         </aside>
 
@@ -269,11 +337,16 @@ function AnalyzeContent() {
 
 export default function AnalyzePage() {
   return (
-    <Suspense fallback={
-      <div className="h-screen flex items-center justify-center" style={{ background: "var(--bg)", color: "var(--muted)" }}>
-        <Loader2 size={24} className="animate-spin" />
-      </div>
-    }>
+    <Suspense
+      fallback={
+        <div
+          className="h-screen flex items-center justify-center"
+          style={{ background: "var(--bg)", color: "var(--muted)" }}
+        >
+          <Loader2 size={24} className="animate-spin" />
+        </div>
+      }
+    >
       <AnalyzeContent />
     </Suspense>
   );
