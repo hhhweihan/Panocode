@@ -4,9 +4,11 @@ import { useEffect, useState, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { parseGithubUrl, type RepoInfo, type TreeNode } from "@/lib/github";
 import { filterCodeFiles } from "@/lib/codeFilter";
+import { makeLogEntry, type LogEntry } from "@/lib/logger";
 import FileTree from "@/components/FileTree";
 import CodePanel from "@/components/CodePanel";
 import AnalysisPanel from "@/components/AnalysisPanel";
+import LogPanel from "@/components/LogPanel";
 import type { AnalysisResult } from "@/app/api/analyze/route";
 import {
   Github,
@@ -29,6 +31,24 @@ function findNodeByPath(tree: TreeNode[], targetPath: string): TreeNode | null {
   return null;
 }
 
+/** Count all blob nodes in a tree */
+function countFiles(tree: TreeNode[]): { files: number; dirs: number } {
+  let files = 0;
+  let dirs = 0;
+  function walk(nodes: TreeNode[]) {
+    for (const n of nodes) {
+      if (n.type === "tree") {
+        dirs++;
+        if (n.children) walk(n.children);
+      } else {
+        files++;
+      }
+    }
+  }
+  walk(tree);
+  return { files, dirs };
+}
+
 function AnalyzeContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -49,6 +69,11 @@ function AnalyzeContent() {
   const [analysisError, setAnalysisError] = useState<string | null>(null);
   const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
 
+  const [logs, setLogs] = useState<LogEntry[]>([]);
+
+  const addLog = (entry: LogEntry) =>
+    setLogs((prev) => [...prev, entry]);
+
   useEffect(() => {
     const url = searchParams.get("url");
     if (url) {
@@ -58,8 +83,26 @@ function AnalyzeContent() {
   }, []);
 
   const fetchAnalysis = async (info: RepoInfo) => {
-    const codePaths = filterCodeFiles(info.tree);
-    if (codePaths.length === 0) return;
+    const allPaths = filterCodeFiles(info.tree);
+
+    addLog(makeLogEntry(
+      "info",
+      `代码文件过滤：共 ${allPaths.length} 个代码文件（已排除图片、lock 文件等）`
+    ));
+
+    if (allPaths.length === 0) return;
+
+    const requestPayload = {
+      repoName: info.fullName,
+      fileCount: allPaths.length,
+      filePaths: allPaths,
+    };
+
+    addLog(makeLogEntry(
+      "info",
+      "发起 AI 分析请求…",
+      { request: requestPayload }
+    ));
 
     setAnalysisLoading(true);
     setAnalysisError(null);
@@ -71,17 +114,28 @@ function AnalyzeContent() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           repoName: info.fullName,
-          filePaths: codePaths,
+          filePaths: allPaths,
         }),
       });
       const data = await res.json();
+
       if (!res.ok) {
-        setAnalysisError(data.error || "分析失败");
+        const msg = (data as { error?: string }).error || "分析失败";
+        setAnalysisError(msg);
+        addLog(makeLogEntry("error", `AI 分析失败：${msg}`));
         return;
       }
+
       setAnalysisResult(data as AnalysisResult);
+      addLog(makeLogEntry(
+        "success",
+        "AI 分析完成",
+        { response: data }
+      ));
     } catch {
-      setAnalysisError("Network error");
+      const msg = "网络错误，AI 分析请求失败";
+      setAnalysisError(msg);
+      addLog(makeLogEntry("error", msg));
     } finally {
       setAnalysisLoading(false);
     }
@@ -91,8 +145,15 @@ function AnalyzeContent() {
     const parsed = parseGithubUrl(url);
     if (!parsed) {
       setInputError("Invalid GitHub URL format");
+      addLog(makeLogEntry("error", `GitHub URL 校验失败：无效的地址格式 "${url}"`));
       return;
     }
+
+    addLog(makeLogEntry(
+      "success",
+      `GitHub URL 校验通过：${parsed.owner}/${parsed.repo}`
+    ));
+
     setInputError("");
     setTreeLoading(true);
     setTreeError(null);
@@ -101,19 +162,33 @@ function AnalyzeContent() {
     setFileContent(null);
     setAnalysisResult(null);
     setAnalysisError(null);
+    setLogs([makeLogEntry("success", `GitHub URL 校验通过：${parsed.owner}/${parsed.repo}`)]);
 
     try {
       const res = await fetch(`/api/github/tree?url=${encodeURIComponent(url)}`);
       const data = await res.json();
+
       if (!res.ok) {
-        setTreeError(data.error || "Failed to load repository");
+        const msg = (data as { error?: string }).error || "Failed to load repository";
+        setTreeError(msg);
+        addLog(makeLogEntry("error", `仓库获取失败：${msg}`));
         return;
       }
-      setRepoInfo(data);
-      // Auto-trigger AI analysis after tree loads
-      fetchAnalysis(data);
+
+      const info = data as RepoInfo & { stars?: number };
+      setRepoInfo(info);
+
+      const { files, dirs } = countFiles(info.tree);
+      addLog(makeLogEntry(
+        "success",
+        `文件树加载完成：${files} 个文件，${dirs} 个目录`
+      ));
+
+      fetchAnalysis(info);
     } catch {
-      setTreeError("Network error — please try again");
+      const msg = "网络错误，请重试";
+      setTreeError(msg);
+      addLog(makeLogEntry("error", msg));
     } finally {
       setTreeLoading(false);
     }
@@ -146,10 +221,10 @@ function AnalyzeContent() {
       const res = await fetch(`/api/github/file?${params}`);
       const data = await res.json();
       if (!res.ok) {
-        setFileError(data.error || "Failed to load file");
+        setFileError((data as { error?: string }).error || "Failed to load file");
         return;
       }
-      setFileContent(data.content);
+      setFileContent((data as { content: string }).content);
     } catch {
       setFileError("Failed to load file content");
     } finally {
@@ -210,7 +285,7 @@ function AnalyzeContent() {
 
       {/* Main 3-column layout */}
       <div className="flex-1 flex overflow-hidden">
-        {/* Left panel — input + AI analysis */}
+        {/* Left panel */}
         <aside
           className="w-72 shrink-0 flex flex-col border-r overflow-hidden"
           style={{ borderColor: "var(--border)", background: "var(--panel)" }}
@@ -254,26 +329,26 @@ function AnalyzeContent() {
             )}
           </div>
 
-          {/* Repo description */}
-          {repoInfo?.description && (
-            <div className="px-3 py-2 border-b shrink-0" style={{ borderColor: "var(--border)" }}>
-              <p className="text-xs" style={{ color: "var(--muted)", lineHeight: "1.5" }}>
-                {repoInfo.description}
-              </p>
-            </div>
-          )}
+          {/* Work log panel */}
+          <LogPanel entries={logs} />
 
-          {/* AI Analysis panel — scrollable */}
-          <div className="flex-1 overflow-auto">
-            {(analysisLoading || analysisError || analysisResult) && (
-              <div className="border-b" style={{ borderColor: "var(--border)" }}>
-                <AnalysisPanel
-                  loading={analysisLoading}
-                  error={analysisError}
-                  result={analysisResult}
-                  onFileClick={handleEntryFileClick}
-                />
+          {/* Scrollable bottom: description + AI analysis */}
+          <div className="flex-1 overflow-auto flex flex-col">
+            {repoInfo?.description && (
+              <div className="px-3 py-2 border-b shrink-0" style={{ borderColor: "var(--border)" }}>
+                <p className="text-xs" style={{ color: "var(--muted)", lineHeight: "1.5" }}>
+                  {repoInfo.description}
+                </p>
               </div>
+            )}
+
+            {(analysisLoading || analysisError || analysisResult) && (
+              <AnalysisPanel
+                loading={analysisLoading}
+                error={analysisError}
+                result={analysisResult}
+                onFileClick={handleEntryFileClick}
+              />
             )}
           </div>
         </aside>
@@ -300,9 +375,7 @@ function AnalyzeContent() {
             {treeError && !treeLoading && (
               <div className="flex flex-col items-center gap-2 py-12 px-4 text-center">
                 <AlertCircle size={20} style={{ color: "var(--error)" }} />
-                <p className="text-sm" style={{ color: "var(--error)" }}>
-                  {treeError}
-                </p>
+                <p className="text-sm" style={{ color: "var(--error)" }}>{treeError}</p>
               </div>
             )}
             {!treeLoading && !treeError && !repoInfo && (
