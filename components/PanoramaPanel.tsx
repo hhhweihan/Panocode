@@ -9,31 +9,13 @@ import type { AnalysisLocale } from "@/components/AnalysisPanel";
 
 const ROOT_W = 260;
 const ROOT_H = 90;
-const CHILD_W = 240;
-const CHILD_H = 86;
-const CONNECTOR_X = 32;   // x of the vertical dashed line (relative to canvas origin)
-const CHILD_X = 96;       // left edge of child cards
-const CHILD_Y_START = ROOT_H + 48;
-const CHILD_GAP = 12;
+const CARD_W = 220;
+const CARD_H = 86;
+const COL_GAP = 64;         // horizontal gap between parent-right and child-left
+const CARD_GAP = 12;        // vertical gap between sibling cards
+const CONN_MARGIN = 20;     // connector vertical line is this far left of child column
 const CANVAS_PAD_X = 20;
 const CANVAS_PAD_Y = 20;
-
-function childTop(i: number) {
-  return CANVAS_PAD_Y + CHILD_Y_START + i * (CHILD_H + CHILD_GAP);
-}
-
-function childCenterY(i: number) {
-  return childTop(i) + CHILD_H / 2;
-}
-
-function canvasWidth() {
-  return CANVAS_PAD_X * 2 + Math.max(ROOT_W, CHILD_X + CHILD_W);
-}
-
-function canvasHeight(n: number) {
-  if (n === 0) return CANVAS_PAD_Y * 2 + ROOT_H;
-  return CANVAS_PAD_Y + CHILD_Y_START + n * (CHILD_H + CHILD_GAP) - CHILD_GAP + CANVAS_PAD_Y;
-}
 
 // ── drillDown visuals ─────────────────────────────────────────────────────────
 
@@ -71,23 +53,183 @@ const TEXT = {
   },
 } as const;
 
-// ── Root node card ────────────────────────────────────────────────────────────
+// ── Tree layout ───────────────────────────────────────────────────────────────
 
-interface RootCardProps {
-  name: string;
-  file: string;
-  onClick: () => void;
+interface LayoutNode {
+  node: CallgraphNode;
+  x: number;
+  y: number;
+  depth: number;
+  parentPath: number[];   // path indices from result.children
+  selfIndex: number;      // index within parent's children
 }
 
-function RootCard({ name, file, onClick }: RootCardProps) {
+/** Height of node's full subtree (including descendants). */
+function subtreeH(node: CallgraphNode): number {
+  const ch = node.children ?? [];
+  if (ch.length === 0) return CARD_H;
+  const total = ch.reduce((s, c) => s + subtreeH(c), 0);
+  return Math.max(CARD_H, total + (ch.length - 1) * CARD_GAP);
+}
+
+/** X position of the left edge of cards at a given depth. */
+function colX(depth: number): number {
+  return CANVAS_PAD_X + ROOT_W + COL_GAP + depth * (CARD_W + COL_GAP);
+}
+
+function computeLayout(result: CallgraphResult): {
+  nodes: LayoutNode[];
+  rootX: number;
+  rootY: number;
+  canvasW: number;
+  canvasH: number;
+} {
+  const nodes: LayoutNode[] = [];
+
+  // Total height is driven by depth-0 children
+  const childrenTotalH =
+    result.children.length === 0
+      ? 0
+      : result.children.reduce((s, c) => s + subtreeH(c), 0) +
+        (result.children.length - 1) * CARD_GAP;
+
+  const mainH = Math.max(ROOT_H, childrenTotalH);
+  const rootY = CANVAS_PAD_Y + (mainH - ROOT_H) / 2;
+  const childrenStartY = CANVAS_PAD_Y + (mainH - childrenTotalH) / 2;
+
+  function layout(
+    children: CallgraphNode[],
+    depth: number,
+    yStart: number,
+    parentPath: number[],
+  ) {
+    let cursor = yStart;
+    for (let i = 0; i < children.length; i++) {
+      const child = children[i];
+      const h = subtreeH(child);
+      const cardY = cursor + (h - CARD_H) / 2;
+      nodes.push({ node: child, x: colX(depth), y: cardY, depth, parentPath, selfIndex: i });
+      if (child.children && child.children.length > 0) {
+        layout(child.children, depth + 1, cursor, [...parentPath, i]);
+      }
+      cursor += h + CARD_GAP;
+    }
+  }
+
+  if (result.children.length > 0) {
+    layout(result.children, 0, childrenStartY, []);
+  }
+
+  const maxDepth = nodes.length > 0 ? Math.max(...nodes.map((n) => n.depth)) : -1;
+  const canvasW =
+    CANVAS_PAD_X * 2 +
+    ROOT_W +
+    (maxDepth >= 0 ? COL_GAP + (maxDepth + 1) * (CARD_W + COL_GAP) : 0);
+  const canvasH = CANVAS_PAD_Y * 2 + mainH;
+
+  return { nodes, rootX: CANVAS_PAD_X, rootY, canvasW, canvasH };
+}
+
+// ── Connector data ────────────────────────────────────────────────────────────
+
+interface ConnGroup {
+  parentRightX: number;
+  parentCenterY: number;
+  connX: number;
+  childLeftX: number;
+  childCenterYs: number[];
+}
+
+function computeConnectors(
+  result: CallgraphResult,
+  layoutNodes: LayoutNode[],
+  rootY: number,
+): ConnGroup[] {
+  const groups: ConnGroup[] = [];
+
+  // Root → depth-0 children
+  if (result.children.length > 0) {
+    const d0 = layoutNodes.filter((n) => n.depth === 0 && n.parentPath.length === 0);
+    groups.push({
+      parentRightX: CANVAS_PAD_X + ROOT_W,
+      parentCenterY: rootY + ROOT_H / 2,
+      connX: colX(0) - CONN_MARGIN,
+      childLeftX: colX(0),
+      childCenterYs: d0.map((n) => n.y + CARD_H / 2),
+    });
+  }
+
+  // Each interior node → its children
+  for (const ln of layoutNodes) {
+    if (!ln.node.children || ln.node.children.length === 0) continue;
+    const childDepth = ln.depth + 1;
+    const myPath = [...ln.parentPath, ln.selfIndex];
+    const myChildren = layoutNodes.filter(
+      (n) =>
+        n.depth === childDepth &&
+        n.parentPath.length === myPath.length &&
+        n.parentPath.every((v, i) => v === myPath[i]),
+    );
+    if (myChildren.length === 0) continue;
+    groups.push({
+      parentRightX: colX(ln.depth) + CARD_W,
+      parentCenterY: ln.y + CARD_H / 2,
+      connX: colX(childDepth) - CONN_MARGIN,
+      childLeftX: colX(childDepth),
+      childCenterYs: myChildren.map((n) => n.y + CARD_H / 2),
+    });
+  }
+
+  return groups;
+}
+
+// ── SVG Connectors ────────────────────────────────────────────────────────────
+
+function Connectors({
+  groups,
+  canvasW,
+  canvasH,
+}: {
+  groups: ConnGroup[];
+  canvasW: number;
+  canvasH: number;
+}) {
+  return (
+    <svg
+      style={{ position: "absolute", top: 0, left: 0, overflow: "visible", pointerEvents: "none" }}
+      width={canvasW}
+      height={canvasH}
+    >
+      {groups.map((g, gi) => {
+        if (g.childCenterYs.length === 0) return null;
+        const minY = Math.min(g.parentCenterY, ...g.childCenterYs);
+        const maxY = Math.max(g.parentCenterY, ...g.childCenterYs);
+        return (
+          <g key={gi} stroke="var(--border)" strokeWidth={1.5} strokeDasharray="5 4" fill="none">
+            {/* Horizontal elbow from parent right to connector X */}
+            <line x1={g.parentRightX} y1={g.parentCenterY} x2={g.connX} y2={g.parentCenterY} />
+            {/* Vertical connector line */}
+            <line x1={g.connX} y1={minY} x2={g.connX} y2={maxY} />
+            {/* Horizontal lines to each child */}
+            {g.childCenterYs.map((cy, i) => (
+              <line key={i} x1={g.connX} y1={cy} x2={g.childLeftX} y2={cy} />
+            ))}
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
+// ── Root node card ────────────────────────────────────────────────────────────
+
+function RootCard({ name, file, onClick }: { name: string; file: string; onClick: () => void }) {
   const filename = file.split("/").pop() ?? file;
   return (
     <div
       onClick={onClick}
       style={{
         position: "absolute",
-        left: CANVAS_PAD_X,
-        top: CANVAS_PAD_Y,
         width: ROOT_W,
         height: ROOT_H,
         cursor: "pointer",
@@ -128,7 +270,15 @@ function RootCard({ name, file, onClick }: RootCardProps) {
         >
           {name}
         </div>
-        <div style={{ fontSize: 10, color: "#3fb950aa", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+        <div
+          style={{
+            fontSize: 10,
+            color: "#3fb950aa",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
           {file}
         </div>
       </div>
@@ -140,15 +290,17 @@ function RootCard({ name, file, onClick }: RootCardProps) {
 
 interface ChildCardProps {
   node: CallgraphNode;
-  index: number;
   locale: AnalysisLocale;
   onFileClick: (path: string) => void;
+  isAnalyzing: boolean;
 }
 
-function ChildCard({ node, index, locale, onFileClick }: ChildCardProps) {
+function ChildCard({ node, locale, onFileClick, isAnalyzing }: ChildCardProps) {
   const s = DRILL_STYLE[node.drillDown] ?? DRILL_STYLE[0];
   const label = DRILL_LABEL[locale][node.drillDown as -1 | 0 | 1];
-  const filename = node.likelyFile ? node.likelyFile.split("/").pop() ?? node.likelyFile : TEXT[locale].noFile;
+  const filename = node.likelyFile
+    ? (node.likelyFile.split("/").pop() ?? node.likelyFile)
+    : TEXT[locale].noFile;
   const dimmed = node.drillDown === -1;
 
   return (
@@ -157,10 +309,8 @@ function ChildCard({ node, index, locale, onFileClick }: ChildCardProps) {
       title={node.likelyFile ?? undefined}
       style={{
         position: "absolute",
-        left: CANVAS_PAD_X + CHILD_X,
-        top: childTop(index),
-        width: CHILD_W,
-        height: CHILD_H,
+        width: CARD_W,
+        height: CARD_H,
         cursor: node.likelyFile ? "pointer" : "default",
         borderRadius: 8,
         overflow: "hidden",
@@ -196,21 +346,29 @@ function ChildCard({ node, index, locale, onFileClick }: ChildCardProps) {
         >
           {filename}
         </span>
-        {label && (
-          <span
-            style={{
-              fontSize: 9,
-              color: s.dot,
-              flexShrink: 0,
-              border: `1px solid ${s.border}`,
-              borderRadius: 999,
-              padding: "0px 5px",
-              background: "color-mix(in srgb, var(--hover) 50%, transparent)",
-            }}
-          >
-            {label}
-          </span>
-        )}
+        <div style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
+          {isAnalyzing && (
+            <Loader2
+              size={10}
+              className="animate-spin"
+              style={{ color: "var(--accent)", flexShrink: 0 }}
+            />
+          )}
+          {label && (
+            <span
+              style={{
+                fontSize: 9,
+                color: s.dot,
+                border: `1px solid ${s.border}`,
+                borderRadius: 999,
+                padding: "0px 5px",
+                background: "color-mix(in srgb, var(--hover) 50%, transparent)",
+              }}
+            >
+              {label}
+            </span>
+          )}
+        </div>
       </div>
 
       {/* Body */}
@@ -258,47 +416,6 @@ function ChildCard({ node, index, locale, onFileClick }: ChildCardProps) {
   );
 }
 
-// ── Connector SVG ─────────────────────────────────────────────────────────────
-
-function Connectors({ count }: { count: number }) {
-  if (count === 0) return null;
-
-  const absConnX = CANVAS_PAD_X + CONNECTOR_X;
-  const lineStart = CANVAS_PAD_Y + ROOT_H;
-  const lastCY = childCenterY(count - 1);
-
-  return (
-    <svg
-      style={{ position: "absolute", top: 0, left: 0, overflow: "visible", pointerEvents: "none" }}
-      width={canvasWidth()}
-      height={canvasHeight(count)}
-    >
-      {/* Vertical dashed line */}
-      <line
-        x1={absConnX} y1={lineStart}
-        x2={absConnX} y2={lastCY}
-        stroke="var(--border)"
-        strokeWidth={1.5}
-        strokeDasharray="5 4"
-      />
-      {/* Horizontal dashes to each child */}
-      {Array.from({ length: count }, (_, i) => {
-        const cy = childCenterY(i);
-        return (
-          <line
-            key={i}
-            x1={absConnX} y1={cy}
-            x2={CANVAS_PAD_X + CHILD_X} y2={cy}
-            stroke="var(--border)"
-            strokeWidth={1.5}
-            strokeDasharray="5 4"
-          />
-        );
-      })}
-    </svg>
-  );
-}
-
 // ── Main panel ────────────────────────────────────────────────────────────────
 
 interface PanoramaPanelProps {
@@ -306,9 +423,16 @@ interface PanoramaPanelProps {
   result: CallgraphResult | null;
   locale: AnalysisLocale;
   onFileClick: (path: string) => void;
+  analyzingFunctions?: Set<string>;
 }
 
-export default function PanoramaPanel({ loading, result, locale, onFileClick }: PanoramaPanelProps) {
+export default function PanoramaPanel({
+  loading,
+  result,
+  locale,
+  onFileClick,
+  analyzingFunctions,
+}: PanoramaPanelProps) {
   const t = TEXT[locale];
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -318,24 +442,32 @@ export default function PanoramaPanel({ loading, result, locale, onFileClick }: 
 
   const dragging = useRef(false);
   const dragStart = useRef({ x: 0, y: 0, tx: 0, ty: 0 });
+  const prevResultRef = useRef<CallgraphResult | null>(null);
 
   // ── Reset/fit view ──────────────────────────────────────────────────────────
 
   const resetView = useCallback(() => {
     if (!containerRef.current || !result) {
-      setTx(20); setTy(20); setScale(1);
+      setTx(20);
+      setTy(20);
+      setScale(1);
       return;
     }
+    const { canvasW, canvasH } = computeLayout(result);
     const { clientWidth, clientHeight } = containerRef.current;
-    const cw = canvasWidth();
-    const ch = canvasHeight(result.children.length);
-    const z = Math.min(clientWidth / cw, clientHeight / ch, 1);
+    const z = Math.min(clientWidth / canvasW, clientHeight / canvasH, 1);
     setScale(z);
-    setTx(Math.max(8, (clientWidth  - cw * z) / 2));
-    setTy(Math.max(8, (clientHeight - ch * z) / 2));
+    setTx(Math.max(8, (clientWidth - canvasW * z) / 2));
+    setTy(Math.max(8, (clientHeight - canvasH * z) / 2));
   }, [result]);
 
-  useEffect(() => { resetView(); }, [resetView]);
+  // Only reset view when result transitions from null → non-null (first load)
+  useEffect(() => {
+    if (result && !prevResultRef.current) {
+      resetView();
+    }
+    prevResultRef.current = result;
+  }, [result, resetView]);
 
   // ── Pan (global mouse move) ─────────────────────────────────────────────────
 
@@ -374,7 +506,7 @@ export default function PanoramaPanel({ loading, result, locale, onFileClick }: 
     if (!el) return;
     const handler = (e: WheelEvent) => {
       e.preventDefault();
-      setScale((prev) => Math.min(Math.max(prev * (e.deltaY < 0 ? 1.1 : 0.9), 0.15), 3));
+      setScale((prev) => Math.min(Math.max(prev * (e.deltaY < 0 ? 1.1 : 0.9), 0.1), 4));
     };
     el.addEventListener("wheel", handler, { passive: false });
     return () => el.removeEventListener("wheel", handler);
@@ -382,8 +514,16 @@ export default function PanoramaPanel({ loading, result, locale, onFileClick }: 
 
   // ── Toolbar buttons ─────────────────────────────────────────────────────────
 
-  const zoomIn  = () => setScale((s) => Math.min(s * 1.2, 3));
-  const zoomOut = () => setScale((s) => Math.max(s / 1.2, 0.15));
+  const zoomIn = () => setScale((s) => Math.min(s * 1.2, 4));
+  const zoomOut = () => setScale((s) => Math.max(s / 1.2, 0.1));
+
+  // ── Render ──────────────────────────────────────────────────────────────────
+
+  const layout = result ? computeLayout(result) : null;
+  const connGroups =
+    layout && result ? computeConnectors(result, layout.nodes, layout.rootY) : [];
+
+  const totalNodes = layout ? layout.nodes.length : 0;
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
@@ -394,23 +534,45 @@ export default function PanoramaPanel({ loading, result, locale, onFileClick }: 
       >
         <div className="flex items-center gap-1.5">
           <Network size={12} style={{ color: "var(--accent)" }} />
-          <span className="text-xs font-semibold uppercase tracking-wider" style={{ color: "var(--muted)" }}>
+          <span
+            className="text-xs font-semibold uppercase tracking-wider"
+            style={{ color: "var(--muted)" }}
+          >
             {t.title}
           </span>
           {result && (
             <span className="text-xs tabular-nums" style={{ color: "var(--muted)" }}>
-              ({result.children.length})
+              ({totalNodes})
             </span>
+          )}
+          {analyzingFunctions && analyzingFunctions.size > 0 && (
+            <Loader2
+              size={10}
+              className="animate-spin"
+              style={{ color: "var(--accent)" }}
+            />
           )}
         </div>
         <div className="flex items-center gap-0.5">
-          <button onClick={zoomOut} className="p-1 rounded hover:bg-[var(--hover)] transition-colors" title={t.zoomOut}>
+          <button
+            onClick={zoomOut}
+            className="p-1 rounded hover:bg-[var(--hover)] transition-colors"
+            title={t.zoomOut}
+          >
             <ZoomOut size={11} style={{ color: "var(--muted)" }} />
           </button>
-          <button onClick={zoomIn} className="p-1 rounded hover:bg-[var(--hover)] transition-colors" title={t.zoomIn}>
+          <button
+            onClick={zoomIn}
+            className="p-1 rounded hover:bg-[var(--hover)] transition-colors"
+            title={t.zoomIn}
+          >
             <ZoomIn size={11} style={{ color: "var(--muted)" }} />
           </button>
-          <button onClick={resetView} className="p-1 rounded hover:bg-[var(--hover)] transition-colors" title={t.reset}>
+          <button
+            onClick={resetView}
+            className="p-1 rounded hover:bg-[var(--hover)] transition-colors"
+            title={t.reset}
+          >
             <RefreshCcw size={11} style={{ color: "var(--muted)" }} />
           </button>
         </div>
@@ -418,22 +580,25 @@ export default function PanoramaPanel({ loading, result, locale, onFileClick }: 
 
       {/* Canvas */}
       <div className="flex-1 relative overflow-hidden" style={{ background: "var(--bg)" }}>
-
         {loading && (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-2">
             <Loader2 size={18} className="animate-spin" style={{ color: "var(--accent)" }} />
-            <span className="text-xs" style={{ color: "var(--muted)" }}>{t.loading}</span>
+            <span className="text-xs" style={{ color: "var(--muted)" }}>
+              {t.loading}
+            </span>
           </div>
         )}
 
         {!loading && !result && (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 px-4 text-center">
             <Network size={28} style={{ color: "var(--border)" }} />
-            <span className="text-xs leading-relaxed" style={{ color: "var(--muted)" }}>{t.empty}</span>
+            <span className="text-xs leading-relaxed" style={{ color: "var(--muted)" }}>
+              {t.empty}
+            </span>
           </div>
         )}
 
-        {result && !loading && (
+        {result && !loading && layout && (
           <div
             ref={containerRef}
             className="absolute inset-0"
@@ -445,29 +610,45 @@ export default function PanoramaPanel({ loading, result, locale, onFileClick }: 
                 position: "absolute",
                 transform: `translate(${tx}px, ${ty}px) scale(${scale})`,
                 transformOrigin: "0 0",
-                width: canvasWidth(),
-                height: canvasHeight(result.children.length),
+                width: layout.canvasW,
+                height: layout.canvasH,
               }}
             >
               {/* SVG connector lines (rendered below cards) */}
-              <Connectors count={result.children.length} />
-
-              {/* Root card */}
-              <RootCard
-                name={result.rootFunction}
-                file={result.entryFile}
-                onClick={() => onFileClick(result.entryFile)}
+              <Connectors
+                groups={connGroups}
+                canvasW={layout.canvasW}
+                canvasH={layout.canvasH}
               />
 
-              {/* Child cards */}
-              {result.children.map((node, i) => (
-                <ChildCard
-                  key={`${node.name}-${i}`}
-                  node={node}
-                  index={i}
-                  locale={locale}
-                  onFileClick={onFileClick}
+              {/* Root card */}
+              <div
+                style={{
+                  position: "absolute",
+                  left: layout.rootX,
+                  top: layout.rootY,
+                }}
+              >
+                <RootCard
+                  name={result.rootFunction}
+                  file={result.entryFile}
+                  onClick={() => onFileClick(result.entryFile)}
                 />
+              </div>
+
+              {/* Child cards */}
+              {layout.nodes.map((ln, i) => (
+                <div
+                  key={`${ln.parentPath.join("-")}-${ln.selfIndex}-${ln.node.name}`}
+                  style={{ position: "absolute", left: ln.x, top: ln.y }}
+                >
+                  <ChildCard
+                    node={ln.node}
+                    locale={locale}
+                    onFileClick={onFileClick}
+                    isAnalyzing={analyzingFunctions?.has(ln.node.name) ?? false}
+                  />
+                </div>
               ))}
             </div>
           </div>

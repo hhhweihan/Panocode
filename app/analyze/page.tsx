@@ -12,7 +12,8 @@ import type { AnalysisLocale, EntryCheckResult } from "@/components/AnalysisPane
 import LogPanel from "@/components/LogPanel";
 import PanoramaPanel from "@/components/PanoramaPanel";
 import type { AnalysisResult } from "@/app/api/analyze/route";
-import type { CallgraphResult } from "@/app/api/analyze/callgraph/route";
+import type { CallgraphResult, CallgraphNode } from "@/app/api/analyze/callgraph/route";
+import { extractFunctionSnippet, addChildrenToNode } from "@/lib/callgraphUtils";
 import {
   Github,
   ArrowRight,
@@ -117,6 +118,7 @@ function AnalyzeContent() {
 
   const [callgraphLoading, setCallgraphLoading] = useState(false);
   const [callgraphResult, setCallgraphResult] = useState<CallgraphResult | null>(null);
+  const [analyzingFunctions, setAnalyzingFunctions] = useState<Set<string>>(new Set());
 
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [logPanelMode, setLogPanelMode] = useState<"docked" | "floating">("docked");
@@ -212,6 +214,147 @@ function AnalyzeContent() {
     analysisLocaleRef.current = analysisLocale;
   }, [analysisLocale]);
 
+  const runRecursiveAnalysis = useCallback(async (
+    initialResult: CallgraphResult,
+    info: RepoInfo & { stars?: number },
+    entryFileContent: string,
+  ) => {
+    const maxDepth = parseInt(process.env.NEXT_PUBLIC_CALLGRAPH_MAX_DEPTH ?? "2", 10);
+    if (maxDepth < 2) return; // depth-1 is already done by the initial callgraph
+
+    const allFilePaths = filterCodeFiles(info.tree);
+    const contentCache = new Map<string, string>();
+    contentCache.set(initialResult.entryFile, entryFileContent);
+
+    async function fetchContent(filePath: string): Promise<string | null> {
+      if (contentCache.has(filePath)) return contentCache.get(filePath)!;
+      const node = findNodeByPath(info.tree, filePath);
+      if (!node || node.type !== "blob") return null;
+      try {
+        const params = new URLSearchParams({
+          owner: info.owner, repo: info.repo, path: node.path, sha: node.sha,
+        });
+        const res = await fetch(`/api/github/file?${params}`);
+        if (!res.ok) return null;
+        const data = await res.json() as { content: string };
+        contentCache.set(filePath, data.content);
+        return data.content;
+      } catch { return null; }
+    }
+
+    type QueueItem = {
+      node: CallgraphNode;
+      depth: number;
+      parentFile: string;
+      pathIndices: number[];
+    };
+
+    const queue: QueueItem[] = initialResult.children
+      .filter((n) => n.drillDown >= 0)
+      .map((node, i) => ({
+        node,
+        depth: 1,
+        parentFile: initialResult.entryFile,
+        pathIndices: [i],
+      }));
+
+    const visited = new Set<string>([initialResult.rootFunction]);
+    let localResult = initialResult;
+
+    while (queue.length > 0) {
+      const item = queue.shift()!;
+      const { node, depth, parentFile, pathIndices } = item;
+
+      if (depth >= maxDepth) continue;
+      if (visited.has(node.name)) continue;
+      if (node.drillDown === -1) continue;
+      visited.add(node.name);
+
+      setAnalyzingFunctions((prev) => new Set([...prev, node.name]));
+
+      // Phase 1: search in parent file
+      let snippet: string | null = null;
+      let foundFile = parentFile;
+
+      const parentContent = await fetchContent(parentFile);
+      if (parentContent) snippet = extractFunctionSnippet(parentContent, node.name);
+
+      // Phase 2: fetch likelyFile if Phase 1 failed
+      if (!snippet && node.likelyFile) {
+        const likelyContent = await fetchContent(node.likelyFile);
+        if (likelyContent) {
+          snippet = extractFunctionSnippet(likelyContent, node.name);
+          if (snippet) foundFile = node.likelyFile;
+        }
+      }
+
+      // Phase 3: ask AI to suggest files
+      if (!snippet) {
+        try {
+          const locRes = await fetch("/api/analyze/callgraph/locate", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              repoName: info.fullName,
+              functionName: node.name,
+              callerFile: parentFile,
+              allFilePaths,
+            }),
+          });
+          if (locRes.ok) {
+            const locData = await locRes.json() as { suggestedFiles: string[] };
+            for (const suggestedFile of locData.suggestedFiles) {
+              const content = await fetchContent(suggestedFile);
+              if (content) {
+                snippet = extractFunctionSnippet(content, node.name);
+                if (snippet) { foundFile = suggestedFile; break; }
+              }
+            }
+          }
+        } catch { /* ignore locate errors */ }
+      }
+
+      setAnalyzingFunctions((prev) => { const s = new Set(prev); s.delete(node.name); return s; });
+
+      if (!snippet) continue;
+
+      // Expand: get sub-functions of this node
+      try {
+        const expandRes = await fetch("/api/analyze/callgraph/expand", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            repoName: info.fullName,
+            functionName: node.name,
+            filePath: foundFile,
+            functionSnippet: snippet,
+            allFilePaths,
+          }),
+        });
+        if (expandRes.ok) {
+          const expandData = await expandRes.json() as { children: CallgraphNode[] };
+          if (expandData.children.length > 0) {
+            localResult = addChildrenToNode(localResult, pathIndices, expandData.children);
+            setCallgraphResult(localResult);
+            addLog(makeLogEntry("info",
+              `递归分析：${node.name} → ${expandData.children.length} 个子函数`));
+
+            expandData.children
+              .filter((c) => c.drillDown >= 0 && !visited.has(c.name))
+              .forEach((child, i) => {
+                queue.push({
+                  node: child,
+                  depth: depth + 1,
+                  parentFile: foundFile,
+                  pathIndices: [...pathIndices, i],
+                });
+              });
+          }
+        }
+      } catch { /* ignore expand errors */ }
+    }
+  }, [addLog]);
+
   const runCallgraphAnalysis = useCallback(async (
     confirmedPath: string,
     fileContent: string,
@@ -219,6 +362,7 @@ function AnalyzeContent() {
   ) => {
     setCallgraphLoading(true);
     setCallgraphResult(null);
+    setAnalyzingFunctions(new Set());
 
     const allFilePaths = filterCodeFiles(info.tree);
     addLog(makeLogEntry("info", `调用图分析：开始分析 ${confirmedPath} 的关键子函数…`));
@@ -248,12 +392,15 @@ function AnalyzeContent() {
         "success",
         `调用图分析完成：${result.rootFunction} 识别到 ${result.children.length} 个关键子函数`,
       ));
+
+      // Kick off recursive analysis
+      runRecursiveAnalysis(result, info, fileContent);
     } catch {
       addLog(makeLogEntry("warning", "调用图分析：网络请求失败"));
     } finally {
       setCallgraphLoading(false);
     }
-  }, [addLog]);
+  }, [addLog, runRecursiveAnalysis]);
 
   const runEntryAnalysis = useCallback(async (
     entryFiles: AnalysisResult["entryFiles"],
@@ -438,6 +585,7 @@ function AnalyzeContent() {
     setCheckingEntryPath(null);
     setCallgraphResult(null);
     setCallgraphLoading(false);
+    setAnalyzingFunctions(new Set());
     setLogs([makeLogEntry("success", `GitHub URL 校验通过：${parsed.owner}/${parsed.repo}`)]);
 
     try {
@@ -751,6 +899,7 @@ function AnalyzeContent() {
             result={callgraphResult}
             locale={analysisLocale}
             onFileClick={handleEntryFileClick}
+            analyzingFunctions={analyzingFunctions}
           />
         </div>
       </div>

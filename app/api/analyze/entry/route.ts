@@ -35,21 +35,76 @@ function extractText(content: string | { type?: string; text?: string }[] | unde
   return "";
 }
 
-export async function POST(req: NextRequest) {
-  // Prefer GitHub Models (GITHUB_TOKEN) for deep entry analysis; fall back to generic LLM config.
-  const githubToken = process.env.GITHUB_TOKEN;
-  const apiKey = githubToken ?? process.env.LLM_API_KEY ?? process.env.GEMINI_API_KEY;
-  const baseUrl = normalizeBaseUrl(
-    githubToken
-      ? (process.env.GITHUB_MODELS_BASE_URL ?? "https://models.inference.ai.azure.com")
-      : (process.env.LLM_BASE_URL ?? "https://generativelanguage.googleapis.com/v1beta/openai")
-  );
-  const model = githubToken
-    ? (process.env.GITHUB_ENTRY_MODEL ?? "gpt-4o-mini")
-    : (process.env.LLM_MODEL ?? "gemini-3-flash-preview");
+type ProviderConfig = {
+  provider: "github-models" | "llm";
+  apiKey: string;
+  baseUrl: string;
+  model: string;
+};
 
-  if (!apiKey) {
-    return NextResponse.json({ error: "GITHUB_TOKEN or LLM_API_KEY is not configured" }, { status: 500 });
+function getProviderConfig(): ProviderConfig | null {
+  const githubToken = process.env.GITHUB_TOKEN;
+  const llmApiKey = process.env.LLM_API_KEY ?? process.env.GEMINI_API_KEY;
+  const useGithubModels = process.env.GITHUB_USE_MODELS === "true";
+
+  if (useGithubModels && githubToken) {
+    return {
+      provider: "github-models",
+      apiKey: githubToken,
+      baseUrl: normalizeBaseUrl(process.env.GITHUB_MODELS_BASE_URL ?? "https://models.inference.ai.azure.com"),
+      model: process.env.GITHUB_ENTRY_MODEL ?? "gpt-4o-mini",
+    };
+  }
+
+  if (llmApiKey) {
+    return {
+      provider: "llm",
+      apiKey: llmApiKey,
+      baseUrl: normalizeBaseUrl(process.env.LLM_BASE_URL ?? "https://generativelanguage.googleapis.com/v1beta/openai"),
+      model: process.env.LLM_MODEL ?? "gemini-3-flash-preview",
+    };
+  }
+
+  if (githubToken) {
+    return {
+      provider: "github-models",
+      apiKey: githubToken,
+      baseUrl: normalizeBaseUrl(process.env.GITHUB_MODELS_BASE_URL ?? "https://models.inference.ai.azure.com"),
+      model: process.env.GITHUB_ENTRY_MODEL ?? "gpt-4o-mini",
+    };
+  }
+
+  return null;
+}
+
+async function requestEntryAnalysis(config: ProviderConfig, prompt: string) {
+  return fetch(`${config.baseUrl}/chat/completions`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${config.apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: config.model,
+      temperature: 0,
+      response_format: { type: "json_object" },
+      messages: [
+        {
+          role: "system",
+          content:
+            "You analyze source code files to determine if they are project entry points. Return valid JSON only.",
+        },
+        { role: "user", content: prompt },
+      ],
+    }),
+  });
+}
+
+export async function POST(req: NextRequest) {
+  const providerConfig = getProviderConfig();
+
+  if (!providerConfig) {
+    return NextResponse.json({ error: "LLM_API_KEY or GITHUB_TOKEN is not configured" }, { status: 500 });
   }
 
   const body = await req.json() as {
@@ -99,28 +154,27 @@ Return JSON only. No markdown fences. Exact shape:
 }`;
 
   try {
-    const res = await fetch(`${baseUrl}/chat/completions`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model,
-        temperature: 0,
-        response_format: { type: "json_object" },
-        messages: [
-          {
-            role: "system",
-            content:
-              "You analyze source code files to determine if they are project entry points. Return valid JSON only.",
-          },
-          { role: "user", content: prompt },
-        ],
-      }),
-    });
+    let res = await requestEntryAnalysis(providerConfig, prompt);
+    let raw = ChatResponseSchema.parse(await res.json());
 
-    const raw = ChatResponseSchema.parse(await res.json());
+    if (
+      !res.ok &&
+      providerConfig.provider === "github-models" &&
+      (raw.error?.message?.includes("models") || raw.error?.message?.includes("permission"))
+    ) {
+      const fallbackApiKey = process.env.LLM_API_KEY ?? process.env.GEMINI_API_KEY;
+      if (fallbackApiKey) {
+        const fallbackConfig: ProviderConfig = {
+          provider: "llm",
+          apiKey: fallbackApiKey,
+          baseUrl: normalizeBaseUrl(process.env.LLM_BASE_URL ?? "https://generativelanguage.googleapis.com/v1beta/openai"),
+          model: process.env.LLM_MODEL ?? "gemini-3-flash-preview",
+        };
+
+        res = await requestEntryAnalysis(fallbackConfig, prompt);
+        raw = ChatResponseSchema.parse(await res.json());
+      }
+    }
 
     if (!res.ok) {
       const msg = raw.error?.message ?? "LLM API error";
