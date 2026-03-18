@@ -7,10 +7,11 @@ Panocode is a Next.js app for exploring public GitHub repositories with AI-assis
 - Analyze repository structure, languages, and tech stack
 - Verify probable entry files with AI
 - Generate a recursive function panorama / call graph
+- Expand or collapse panorama nodes and manually drill a single node one level deeper
 - Group analyzed functions into up to 10 functional modules
 - Color panorama nodes by module and filter the graph by module
 - Show workflow status directly in the AI log panel
-- Save module analysis results into project files under analysis-output/
+- Save call graph and module analysis results into project files under analysis-output/
 
 ## Getting Started
 
@@ -66,10 +67,24 @@ NEXT_PUBLIC_CALLGRAPH_MAX_DEPTH="2"
 3. Verify candidate entry files one by one
 4. Build the top-level call graph for the confirmed entry file
 5. Recursively expand key functions
-6. Group all analyzed functions into functional modules
-7. Save the module analysis JSON into analysis-output/
+6. Allow manual one-level drill-down for suggested or uncertain leaf nodes
+7. Save the current call graph JSON into analysis-output/
+8. Group all analyzed functions into functional modules
+9. Save the module analysis JSON into analysis-output/
 
 ## Output Files
+
+When call graph analysis completes, the app writes a JSON artifact to:
+
+```text
+analysis-output/<repo-name>.callgraph.json
+```
+
+The saved JSON includes:
+
+- repository name and URL
+- project summary and description
+- current panorama call graph tree, including manually drilled nodes
 
 When module analysis completes, the app writes a JSON artifact to:
 

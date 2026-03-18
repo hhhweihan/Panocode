@@ -99,3 +99,25 @@ export function addChildrenToNode(
 
   return { ...result, children: updateList(result.children, path) };
 }
+
+export function serializeCallgraphPath(path: number[]): string {
+  return path.length === 0 ? "root" : path.join(".");
+}
+
+export function getNodeAtPath(
+  result: CallgraphResult,
+  path: number[],
+): CallgraphNode | null {
+  let currentChildren = result.children;
+  let currentNode: CallgraphNode | null = null;
+
+  for (const index of path) {
+    currentNode = currentChildren[index] ?? null;
+    if (!currentNode) {
+      return null;
+    }
+    currentChildren = currentNode.children ?? [];
+  }
+
+  return currentNode;
+}
