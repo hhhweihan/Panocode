@@ -8,7 +8,7 @@ import { makeLogEntry, type LogEntry } from "@/lib/logger";
 import FileTree from "@/components/FileTree";
 import CodePanel from "@/components/CodePanel";
 import AnalysisPanel from "@/components/AnalysisPanel";
-import type { AnalysisLocale } from "@/components/AnalysisPanel";
+import type { AnalysisLocale, EntryCheckResult } from "@/components/AnalysisPanel";
 import LogPanel from "@/components/LogPanel";
 import type { AnalysisResult } from "@/app/api/analyze/route";
 import {
@@ -99,6 +99,9 @@ function AnalyzeContent() {
   const [analysisLocale, setAnalysisLocale] = useState<AnalysisLocale>("zh");
   const [analysisCache, setAnalysisCache] = useState<Partial<Record<AnalysisLocale, AnalysisResult>>>({});
 
+  const [entryCheckResults, setEntryCheckResults] = useState<Record<string, EntryCheckResult>>({});
+  const [checkingEntryPath, setCheckingEntryPath] = useState<string | null>(null);
+
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const analysisLocaleRef = useRef<AnalysisLocale>("zh");
   const text = UI_TEXT[analysisLocale];
@@ -110,6 +113,91 @@ function AnalyzeContent() {
   useEffect(() => {
     analysisLocaleRef.current = analysisLocale;
   }, [analysisLocale]);
+
+  const runEntryAnalysis = useCallback(async (
+    entryFiles: AnalysisResult["entryFiles"],
+    info: RepoInfo & { stars?: number },
+    languages: AnalysisResult["languages"],
+  ) => {
+    setEntryCheckResults({});
+
+    for (const entry of entryFiles) {
+      setCheckingEntryPath(entry.path);
+
+      const node = findNodeByPath(info.tree, entry.path);
+      if (!node || node.type !== "blob") {
+        addLog(makeLogEntry("warning", `入口研判：找不到文件节点 ${entry.path}`));
+        continue;
+      }
+
+      let fileContent: string;
+      try {
+        const params = new URLSearchParams({
+          owner: info.owner,
+          repo: info.repo,
+          path: node.path,
+          sha: node.sha,
+        });
+        const res = await fetch(`/api/github/file?${params}`);
+        const data = await res.json();
+        if (!res.ok) {
+          addLog(makeLogEntry("warning", `入口研判：${entry.path} 文件读取失败`));
+          continue;
+        }
+        fileContent = (data as { content: string }).content;
+      } catch {
+        addLog(makeLogEntry("warning", `入口研判：${entry.path} 网络错误`));
+        continue;
+      }
+
+      const lines = fileContent.split("\n");
+      const truncated =
+        lines.length > 4000
+          ? [
+              ...lines.slice(0, 2000),
+              `\n// ... (${lines.length - 4000} lines omitted) ...\n`,
+              ...lines.slice(-2000),
+            ].join("\n")
+          : fileContent;
+
+      addLog(makeLogEntry("info", `入口研判：开始分析 ${entry.path}（${lines.length} 行）`));
+
+      try {
+        const res = await fetch("/api/analyze/entry", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            repoUrl: `https://github.com/${info.fullName}`,
+            repoName: info.fullName,
+            description: info.description ?? null,
+            languages: languages.map((l) => ({ name: l.name, percentage: l.percentage })),
+            filePath: entry.path,
+            fileContent: truncated,
+          }),
+        });
+        const data = await res.json();
+
+        if (!res.ok) {
+          const msg = (data as { error?: string }).error ?? "研判失败";
+          addLog(makeLogEntry("warning", `入口研判：${entry.path} — ${msg}`));
+          continue;
+        }
+
+        const result = data as EntryCheckResult;
+        setEntryCheckResults((prev) => ({ ...prev, [entry.path]: result }));
+        addLog(makeLogEntry(
+          result.isEntry ? "success" : "info",
+          `入口研判：${entry.path} — ${result.isEntry ? "✓ 确认为入口" : "✗ 非入口"} (${result.confidence}) — ${result.reason}`,
+        ));
+
+        if (result.isEntry) break;
+      } catch {
+        addLog(makeLogEntry("warning", `入口研判：${entry.path} 请求失败`));
+      }
+    }
+
+    setCheckingEntryPath(null);
+  }, [addLog]);
 
   const fetchAnalysis = useCallback(async (info: RepoInfo, locale: AnalysisLocale) => {
     const allPaths = filterCodeFiles(info.tree);
@@ -166,6 +254,10 @@ function AnalyzeContent() {
         `AI 分析完成（${locale === "zh" ? "中文" : "English"}）`,
         { response: data }
       ));
+
+      if (result.entryFiles.length > 0) {
+        runEntryAnalysis(result.entryFiles, info as RepoInfo & { stars?: number }, result.languages);
+      }
     } catch {
       const msg = "网络错误，AI 分析请求失败";
       setAnalysisError(msg);
@@ -173,7 +265,7 @@ function AnalyzeContent() {
     } finally {
       setAnalysisLoading(false);
     }
-  }, [addLog]);
+  }, [addLog, runEntryAnalysis]);
 
   const fetchTree = useCallback(async (url: string) => {
     const parsed = parseGithubUrl(url);
@@ -197,6 +289,8 @@ function AnalyzeContent() {
     setAnalysisResult(null);
     setAnalysisError(null);
     setAnalysisCache({});
+    setEntryCheckResults({});
+    setCheckingEntryPath(null);
     setLogs([makeLogEntry("success", `GitHub URL 校验通过：${parsed.owner}/${parsed.repo}`)]);
 
     try {
@@ -408,6 +502,8 @@ function AnalyzeContent() {
                 locale={analysisLocale}
                 onLocaleChange={handleAnalysisLocaleChange}
                 onFileClick={handleEntryFileClick}
+                entryCheckResults={entryCheckResults}
+                checkingEntryPath={checkingEntryPath}
               />
             )}
           </div>

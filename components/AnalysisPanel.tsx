@@ -1,9 +1,12 @@
 "use client";
 
-import { Loader2, AlertCircle, Sparkles, FileCode } from "lucide-react";
+import { Loader2, AlertCircle, Sparkles, FileCode, CheckCircle2, XCircle } from "lucide-react";
 import type { AnalysisResult } from "@/app/api/analyze/route";
+import type { EntryCheckResult } from "@/app/api/analyze/entry/route";
 
 export type AnalysisLocale = "zh" | "en";
+
+export type { EntryCheckResult };
 
 const CATEGORY_STYLES: Record<string, { bg: string; text: string; border: string }> = {
   framework: { bg: "#2d1b69", text: "#c4b5fd", border: "#7c3aed" },
@@ -24,6 +27,8 @@ interface AnalysisPanelProps {
   locale: AnalysisLocale;
   onLocaleChange: (locale: AnalysisLocale) => void;
   onFileClick: (path: string) => void;
+  entryCheckResults?: Record<string, EntryCheckResult>;
+  checkingEntryPath?: string | null;
 }
 
 const PANEL_TEXT = {
@@ -33,20 +38,17 @@ const PANEL_TEXT = {
     title: "AI 分析",
     languages: "语言",
     techStack: "技术栈",
-    entryFiles: "入口文件",
+    entryFiles: "候选入口文件",
     localeLabel: "语言",
     localeZh: "中文",
     localeEn: "English",
+    confirmed: "已确认",
+    checking: "研判中",
+    notEntry: "非入口",
     category: {
-      framework: "框架",
-      library: "库",
-      language: "语言",
-      tool: "工具",
-      database: "数据库",
-      platform: "平台",
-      testing: "测试",
-      devops: "DevOps",
-      other: "其他",
+      framework: "框架", library: "库", language: "语言", tool: "工具",
+      database: "数据库", platform: "平台", testing: "测试",
+      devops: "DevOps", other: "其他",
     },
   },
   en: {
@@ -55,20 +57,17 @@ const PANEL_TEXT = {
     title: "AI Analysis",
     languages: "Languages",
     techStack: "Tech Stack",
-    entryFiles: "Entry Files",
+    entryFiles: "Candidate Entry Files",
     localeLabel: "Language",
     localeZh: "中文",
     localeEn: "English",
+    confirmed: "Confirmed",
+    checking: "Checking",
+    notEntry: "Not Entry",
     category: {
-      framework: "Framework",
-      library: "Library",
-      language: "Language",
-      tool: "Tool",
-      database: "Database",
-      platform: "Platform",
-      testing: "Testing",
-      devops: "DevOps",
-      other: "Other",
+      framework: "Framework", library: "Library", language: "Language", tool: "Tool",
+      database: "Database", platform: "Platform", testing: "Testing",
+      devops: "DevOps", other: "Other",
     },
   },
 } as const;
@@ -80,6 +79,8 @@ export default function AnalysisPanel({
   locale,
   onLocaleChange,
   onFileClick,
+  entryCheckResults = {},
+  checkingEntryPath,
 }: AnalysisPanelProps) {
   const text = PANEL_TEXT[locale];
 
@@ -112,6 +113,7 @@ export default function AnalysisPanel({
 
   return (
     <div className="flex flex-col gap-4 px-3 py-3">
+      {/* Header + locale switcher */}
       <div className="flex items-center justify-between gap-3">
         <div className="flex items-center gap-1.5">
           <Sparkles size={12} style={{ color: "var(--accent)" }} />
@@ -125,16 +127,12 @@ export default function AnalysisPanel({
           </span>
           {(["zh", "en"] as const).map((value) => {
             const active = value === locale;
-
             return (
               <button
                 key={value}
                 onClick={() => onLocaleChange(value)}
                 className="rounded px-2 py-0.5 text-[11px] transition-colors"
-                style={{
-                  background: active ? "var(--accent)" : "transparent",
-                  color: active ? "#0a0e1a" : "var(--muted)",
-                }}
+                style={{ background: active ? "var(--accent)" : "transparent", color: active ? "#0a0e1a" : "var(--muted)" }}
               >
                 {value === "zh" ? text.localeZh : text.localeEn}
               </button>
@@ -143,6 +141,7 @@ export default function AnalysisPanel({
         </div>
       </div>
 
+      {/* Summary */}
       {result.summary && (
         <p className="text-xs leading-relaxed" style={{ color: "var(--muted)" }}>
           {result.summary}
@@ -152,18 +151,12 @@ export default function AnalysisPanel({
       {/* Languages */}
       {result.languages.length > 0 && (
         <div className="flex flex-col gap-2">
-          <span className="text-xs font-medium" style={{ color: "var(--text)" }}>
-            {text.languages}
-          </span>
+          <span className="text-xs font-medium" style={{ color: "var(--text)" }}>{text.languages}</span>
           <div className="flex h-2 rounded-full overflow-hidden gap-px">
             {result.languages.map((lang) => (
               <div
                 key={lang.name}
-                style={{
-                  width: `${lang.percentage}%`,
-                  background: lang.color || "var(--border)",
-                  minWidth: lang.percentage > 0 ? "2px" : "0",
-                }}
+                style={{ width: `${lang.percentage}%`, background: lang.color || "var(--border)", minWidth: lang.percentage > 0 ? "2px" : "0" }}
                 title={`${lang.name}: ${lang.percentage}%`}
               />
             ))}
@@ -172,17 +165,10 @@ export default function AnalysisPanel({
             {result.languages.map((lang) => (
               <div key={lang.name} className="flex items-center justify-between">
                 <div className="flex items-center gap-1.5">
-                  <div
-                    className="w-2 h-2 rounded-full shrink-0"
-                    style={{ background: lang.color || "var(--border)" }}
-                  />
-                  <span className="text-xs" style={{ color: "var(--text)" }}>
-                    {lang.name}
-                  </span>
+                  <div className="w-2 h-2 rounded-full shrink-0" style={{ background: lang.color || "var(--border)" }} />
+                  <span className="text-xs" style={{ color: "var(--text)" }}>{lang.name}</span>
                 </div>
-                <span className="text-xs tabular-nums" style={{ color: "var(--muted)" }}>
-                  {lang.percentage}%
-                </span>
+                <span className="text-xs tabular-nums" style={{ color: "var(--muted)" }}>{lang.percentage}%</span>
               </div>
             ))}
           </div>
@@ -192,21 +178,15 @@ export default function AnalysisPanel({
       {/* Tech Stack */}
       {result.techStack.length > 0 && (
         <div className="flex flex-col gap-2">
-          <span className="text-xs font-medium" style={{ color: "var(--text)" }}>
-            {text.techStack}
-          </span>
+          <span className="text-xs font-medium" style={{ color: "var(--text)" }}>{text.techStack}</span>
           <div className="flex flex-wrap gap-1.5">
             {result.techStack.map((item) => {
-              const style = CATEGORY_STYLES[item.category] ?? CATEGORY_STYLES.other;
+              const s = CATEGORY_STYLES[item.category] ?? CATEGORY_STYLES.other;
               return (
                 <span
                   key={item.name}
                   className="text-xs px-2 py-0.5 rounded-full border"
-                  style={{
-                    background: style.bg,
-                    color: style.text,
-                    borderColor: style.border,
-                  }}
+                  style={{ background: s.bg, color: s.text, borderColor: s.border }}
                   title={text.category[item.category]}
                 >
                   {item.name}
@@ -220,29 +200,65 @@ export default function AnalysisPanel({
       {/* Entry Files */}
       {result.entryFiles.length > 0 && (
         <div className="flex flex-col gap-2">
-          <span className="text-xs font-medium" style={{ color: "var(--text)" }}>
-            {text.entryFiles}
-          </span>
+          <span className="text-xs font-medium" style={{ color: "var(--text)" }}>{text.entryFiles}</span>
           <div className="flex flex-col gap-1">
-            {result.entryFiles.map((entry) => (
-              <button
-                key={entry.path}
-                onClick={() => onFileClick(entry.path)}
-                className="flex items-start gap-1.5 text-left rounded-md px-2 py-1.5 transition-colors"
-                style={{ background: "var(--hover)" }}
-                title={entry.reason}
-              >
-                <FileCode size={12} className="shrink-0 mt-0.5" style={{ color: "var(--accent)" }} />
-                <div className="min-w-0">
-                  <div className="text-xs truncate" style={{ color: "var(--accent)" }}>
-                    {entry.path}
+            {result.entryFiles.map((entry) => {
+              const check = entryCheckResults[entry.path];
+              const isChecking = checkingEntryPath === entry.path;
+              const isConfirmed = check?.isEntry === true;
+              const isRejected = check?.isEntry === false;
+
+              return (
+                <button
+                  key={entry.path}
+                  onClick={() => onFileClick(entry.path)}
+                  className="flex items-start gap-1.5 text-left rounded-md px-2 py-1.5 transition-colors"
+                  style={{
+                    background: isConfirmed ? "#1a3a1a" : isRejected ? "transparent" : "var(--hover)",
+                    opacity: isRejected ? 0.5 : 1,
+                    border: isConfirmed ? "1px solid #22c55e33" : "1px solid transparent",
+                  }}
+                  title={check?.reason ?? entry.reason}
+                >
+                  {/* Status icon */}
+                  <div className="shrink-0 mt-0.5">
+                    {isChecking && <Loader2 size={12} className="animate-spin" style={{ color: "var(--accent)" }} />}
+                    {isConfirmed && <CheckCircle2 size={12} style={{ color: "var(--success)" }} />}
+                    {isRejected && <XCircle size={12} style={{ color: "var(--muted)" }} />}
+                    {!isChecking && !isConfirmed && !isRejected && (
+                      <FileCode size={12} style={{ color: "var(--accent)" }} />
+                    )}
                   </div>
-                  <div className="text-xs truncate" style={{ color: "var(--muted)" }}>
-                    {entry.reason}
+
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <span
+                        className="text-xs truncate flex-1"
+                        style={{ color: isConfirmed ? "var(--success)" : isRejected ? "var(--muted)" : "var(--accent)" }}
+                      >
+                        {entry.path}
+                      </span>
+                      {isConfirmed && (
+                        <span
+                          className="text-[10px] px-1.5 py-0 rounded-full shrink-0"
+                          style={{ background: "#14532d", color: "var(--success)", border: "1px solid #22c55e44" }}
+                        >
+                          {text.confirmed}
+                        </span>
+                      )}
+                      {isChecking && (
+                        <span className="text-[10px] shrink-0" style={{ color: "var(--muted)" }}>
+                          {text.checking}...
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-xs truncate" style={{ color: "var(--muted)" }}>
+                      {check?.reason ?? entry.reason}
+                    </div>
                   </div>
-                </div>
-              </button>
-            ))}
+                </button>
+              );
+            })}
           </div>
         </div>
       )}
