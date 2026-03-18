@@ -16,11 +16,15 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ content });
   } catch (err) {
     if (err instanceof Error) {
-      if ((err as NodeJS.ErrnoException).code === "TRAVERSAL") {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === "TRAVERSAL") {
         return NextResponse.json({ error: "Path traversal detected" }, { status: 403 });
       }
-      if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+      if (code === "ENOENT") {
         return NextResponse.json({ error: "File not found" }, { status: 404 });
+      }
+      if (code === "EACCES") {
+        return NextResponse.json({ error: "Permission denied" }, { status: 403 });
       }
       return NextResponse.json({ error: err.message }, { status: 500 });
     }
