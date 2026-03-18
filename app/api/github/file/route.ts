@@ -1,5 +1,51 @@
 import { NextRequest, NextResponse } from "next/server";
 
+function getGithubHeaders() {
+  const headers: Record<string, string> = {
+    Accept: "application/vnd.github.v3+json",
+    "User-Agent": "Panocode/1.0",
+    "X-GitHub-Api-Version": "2022-11-28",
+  };
+
+  if (process.env.GITHUB_TOKEN) {
+    headers.Authorization = `Bearer ${process.env.GITHUB_TOKEN}`;
+  }
+
+  return headers;
+}
+
+function getGithub403Message(response: Response) {
+  const remaining = response.headers.get("x-ratelimit-remaining");
+  const limit = response.headers.get("x-ratelimit-limit");
+  const reset = response.headers.get("x-ratelimit-reset");
+  const resource = response.headers.get("x-ratelimit-resource");
+
+  const details: string[] = [];
+
+  if (remaining !== null) {
+    details.push(`remaining: ${remaining}`);
+  }
+
+  if (limit !== null) {
+    details.push(`limit: ${limit}`);
+  }
+
+  if (reset) {
+    const resetDate = new Date(Number(reset) * 1000);
+    if (!Number.isNaN(resetDate.getTime())) {
+      details.push(`reset: ${resetDate.toLocaleString("zh-CN", { hour12: false })}`);
+    }
+  }
+
+  const detailText = details.length > 0 ? ` (${details.join(", ")})` : "";
+
+  if (remaining === "0") {
+    return `GitHub API rate limit exceeded${resource ? ` (${resource})` : ""}${detailText}`;
+  }
+
+  return `Access denied by GitHub API${detailText}`;
+}
+
 export async function GET(req: NextRequest) {
   const owner = req.nextUrl.searchParams.get("owner");
   const repo = req.nextUrl.searchParams.get("repo");
@@ -12,10 +58,7 @@ export async function GET(req: NextRequest) {
 
   try {
     const res = await fetch(`https://api.github.com/repos/${owner}/${repo}/git/blobs/${sha}`, {
-      headers: {
-        Accept: "application/vnd.github.v3+json",
-        "User-Agent": "Panocode/1.0",
-      },
+      headers: getGithubHeaders(),
     });
 
     if (!res.ok) {
@@ -23,7 +66,7 @@ export async function GET(req: NextRequest) {
         return NextResponse.json({ error: `File not found: ${path}` }, { status: 404 });
       }
       if (res.status === 403) {
-        return NextResponse.json({ error: "Access denied or API rate limit exceeded" }, { status: 403 });
+        return NextResponse.json({ error: getGithub403Message(res) }, { status: 403 });
       }
       return NextResponse.json({ error: "Failed to fetch file content" }, { status: res.status });
     }
