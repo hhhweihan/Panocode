@@ -11,7 +11,7 @@ export interface TreeNode {
   name: string;
   path: string;
   type: "blob" | "tree";
-  sha: string;
+  sha?: string;
   children?: TreeNode[];
 }
 
