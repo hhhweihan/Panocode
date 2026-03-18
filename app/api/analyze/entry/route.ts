@@ -36,15 +36,20 @@ function extractText(content: string | { type?: string; text?: string }[] | unde
 }
 
 export async function POST(req: NextRequest) {
-  const apiKey = process.env.LLM_API_KEY ?? process.env.GEMINI_API_KEY;
+  // Prefer GitHub Models (GITHUB_TOKEN) for deep entry analysis; fall back to generic LLM config.
+  const githubToken = process.env.GITHUB_TOKEN;
+  const apiKey = githubToken ?? process.env.LLM_API_KEY ?? process.env.GEMINI_API_KEY;
   const baseUrl = normalizeBaseUrl(
-    process.env.LLM_BASE_URL ?? "https://generativelanguage.googleapis.com/v1beta/openai"
+    githubToken
+      ? (process.env.GITHUB_MODELS_BASE_URL ?? "https://models.inference.ai.azure.com")
+      : (process.env.LLM_BASE_URL ?? "https://generativelanguage.googleapis.com/v1beta/openai")
   );
-  // Use a cheaper/faster model for per-file judgment
-  const model = "gemini-3-flash-preview";
+  const model = githubToken
+    ? (process.env.GITHUB_ENTRY_MODEL ?? "gpt-4o-mini")
+    : (process.env.LLM_MODEL ?? "gemini-3-flash-preview");
 
   if (!apiKey) {
-    return NextResponse.json({ error: "LLM_API_KEY is not configured" }, { status: 500 });
+    return NextResponse.json({ error: "GITHUB_TOKEN or LLM_API_KEY is not configured" }, { status: 500 });
   }
 
   const body = await req.json() as {
