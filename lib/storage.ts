@@ -24,6 +24,8 @@ export interface AnalysisRecord {
     openIssues?: number;
     updatedAt?: string | null;
   };
+  source?: "github" | "local";
+  displayName?: string;
   fileTree: TreeNode[];
   analysisResult: AnalysisResult;
   entryCheckResults: Record<string, EntryCheckResult>;
@@ -39,6 +41,7 @@ export interface AnalysisRecordSummary {
   repoName: string;
   description: string | null;
   topLanguages: { name: string; color: string }[];
+  source?: "github" | "local";
 }
 
 export const STORAGE_KEY = "panocode_history";
@@ -130,8 +133,9 @@ export function buildSummary(record: AnalysisRecord): AnalysisRecordSummary {
     id: record.id,
     analyzedAt: record.analyzedAt,
     url: record.url,
-    repoName: record.repoMeta.fullName,
+    repoName: record.displayName ?? record.repoMeta.fullName,
     description: record.repoMeta.description,
+    source: record.source,
     topLanguages: record.analysisResult.languages
       .slice(0, 2)
       .map((l) => ({ name: l.name, color: l.color })),
