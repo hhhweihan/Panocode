@@ -16,6 +16,28 @@ bun dev
 
 Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
 
+## AI Analysis Setup
+
+Create a local environment file before using the repository analysis feature:
+
+```bash
+cp .env.local.example .env.local
+```
+
+Then configure these values in `.env.local`:
+
+```dotenv
+LLM_API_KEY="your-google-ai-studio-api-key"
+LLM_BASE_URL="https://generativelanguage.googleapis.com/v1beta/openai"
+LLM_MODEL="gemini3-flash-preview"
+```
+
+Notes:
+
+- `.env.local` is already ignored by git via `.gitignore`, so your key should stay out of source control.
+- The analysis route reads `LLM_API_KEY`, `LLM_BASE_URL`, and `LLM_MODEL` from the server environment.
+- `GEMINI_API_KEY` is still accepted as a fallback, but the generic `LLM_*` variables are preferred.
+
 You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
 
 This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
