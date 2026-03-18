@@ -10,7 +10,9 @@ import CodePanel from "@/components/CodePanel";
 import AnalysisPanel from "@/components/AnalysisPanel";
 import type { AnalysisLocale, EntryCheckResult } from "@/components/AnalysisPanel";
 import LogPanel from "@/components/LogPanel";
+import PanoramaPanel from "@/components/PanoramaPanel";
 import type { AnalysisResult } from "@/app/api/analyze/route";
+import type { CallgraphResult } from "@/app/api/analyze/callgraph/route";
 import {
   Github,
   ArrowRight,
@@ -25,6 +27,8 @@ const LEFT_PANEL_MIN_WIDTH = 260;
 const LEFT_PANEL_MAX_WIDTH = 520;
 const TREE_PANEL_MIN_WIDTH = 220;
 const TREE_PANEL_MAX_WIDTH = 520;
+const PANORAMA_PANEL_MIN_WIDTH = 300;
+const PANORAMA_PANEL_MAX_WIDTH = 900;
 
 function clampWidth(width: number, min: number, max: number) {
   return Math.min(Math.max(width, min), max);
@@ -111,12 +115,16 @@ function AnalyzeContent() {
   const [entryCheckResults, setEntryCheckResults] = useState<Record<string, EntryCheckResult>>({});
   const [checkingEntryPath, setCheckingEntryPath] = useState<string | null>(null);
 
+  const [callgraphLoading, setCallgraphLoading] = useState(false);
+  const [callgraphResult, setCallgraphResult] = useState<CallgraphResult | null>(null);
+
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [logPanelMode, setLogPanelMode] = useState<"docked" | "floating">("docked");
   const [leftPanelWidth, setLeftPanelWidth] = useState(288);
   const [treePanelWidth, setTreePanelWidth] = useState(288);
+  const [panoramaPanelWidth, setPanoramaPanelWidth] = useState(400);
   const analysisLocaleRef = useRef<AnalysisLocale>("zh");
-  const resizePanelRef = useRef<"left" | "tree" | null>(null);
+  const resizePanelRef = useRef<"left" | "tree" | "panorama" | null>(null);
   const text = UI_TEXT[analysisLocale];
 
   useEffect(() => {
@@ -127,13 +135,16 @@ function AnalyzeContent() {
 
     const savedLeftWidth = window.localStorage.getItem("panocode-left-panel-width");
     const savedTreeWidth = window.localStorage.getItem("panocode-tree-panel-width");
+    const savedPanoramaWidth = window.localStorage.getItem("panocode-panorama-panel-width");
 
     if (savedLeftWidth) {
       setLeftPanelWidth(clampWidth(Number(savedLeftWidth), LEFT_PANEL_MIN_WIDTH, LEFT_PANEL_MAX_WIDTH));
     }
-
     if (savedTreeWidth) {
       setTreePanelWidth(clampWidth(Number(savedTreeWidth), TREE_PANEL_MIN_WIDTH, TREE_PANEL_MAX_WIDTH));
+    }
+    if (savedPanoramaWidth) {
+      setPanoramaPanelWidth(clampWidth(Number(savedPanoramaWidth), PANORAMA_PANEL_MIN_WIDTH, PANORAMA_PANEL_MAX_WIDTH));
     }
   }, []);
 
@@ -150,6 +161,10 @@ function AnalyzeContent() {
   }, [treePanelWidth]);
 
   useEffect(() => {
+    window.localStorage.setItem("panocode-panorama-panel-width", String(panoramaPanelWidth));
+  }, [panoramaPanelWidth]);
+
+  useEffect(() => {
     const handlePointerMove = (event: MouseEvent) => {
       if (resizePanelRef.current === "left") {
         setLeftPanelWidth(clampWidth(event.clientX, LEFT_PANEL_MIN_WIDTH, LEFT_PANEL_MAX_WIDTH));
@@ -158,6 +173,12 @@ function AnalyzeContent() {
       if (resizePanelRef.current === "tree") {
         setTreePanelWidth(
           clampWidth(event.clientX - leftPanelWidth - 4, TREE_PANEL_MIN_WIDTH, TREE_PANEL_MAX_WIDTH)
+        );
+      }
+
+      if (resizePanelRef.current === "panorama") {
+        setPanoramaPanelWidth(
+          clampWidth(window.innerWidth - event.clientX, PANORAMA_PANEL_MIN_WIDTH, PANORAMA_PANEL_MAX_WIDTH)
         );
       }
     };
@@ -177,7 +198,7 @@ function AnalyzeContent() {
     };
   }, [leftPanelWidth]);
 
-  const startResize = (panel: "left" | "tree") => {
+  const startResize = (panel: "left" | "tree" | "panorama") => {
     resizePanelRef.current = panel;
     document.body.style.cursor = "col-resize";
     document.body.style.userSelect = "none";
@@ -190,6 +211,49 @@ function AnalyzeContent() {
   useEffect(() => {
     analysisLocaleRef.current = analysisLocale;
   }, [analysisLocale]);
+
+  const runCallgraphAnalysis = useCallback(async (
+    confirmedPath: string,
+    fileContent: string,
+    info: RepoInfo & { stars?: number },
+  ) => {
+    setCallgraphLoading(true);
+    setCallgraphResult(null);
+
+    const allFilePaths = filterCodeFiles(info.tree);
+    addLog(makeLogEntry("info", `调用图分析：开始分析 ${confirmedPath} 的关键子函数…`));
+
+    try {
+      const res = await fetch("/api/analyze/callgraph", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          repoName: info.fullName,
+          filePath: confirmedPath,
+          fileContent,
+          allFilePaths,
+        }),
+      });
+      const data = await res.json();
+
+      if (!res.ok) {
+        const msg = (data as { error?: string }).error ?? "调用图分析失败";
+        addLog(makeLogEntry("warning", `调用图分析失败：${msg}`));
+        return;
+      }
+
+      const result = data as CallgraphResult;
+      setCallgraphResult(result);
+      addLog(makeLogEntry(
+        "success",
+        `调用图分析完成：${result.rootFunction} 识别到 ${result.children.length} 个关键子函数`,
+      ));
+    } catch {
+      addLog(makeLogEntry("warning", "调用图分析：网络请求失败"));
+    } finally {
+      setCallgraphLoading(false);
+    }
+  }, [addLog]);
 
   const runEntryAnalysis = useCallback(async (
     entryFiles: AnalysisResult["entryFiles"],
@@ -267,14 +331,18 @@ function AnalyzeContent() {
           `入口研判：${entry.path} — ${result.isEntry ? "✓ 确认为入口" : "✗ 非入口"} (${result.confidence}) — ${result.reason}`,
         ));
 
-        if (result.isEntry) break;
+        if (result.isEntry) {
+          // Kick off callgraph analysis with the confirmed entry file content
+          runCallgraphAnalysis(entry.path, truncated, info);
+          break;
+        }
       } catch {
         addLog(makeLogEntry("warning", `入口研判：${entry.path} 请求失败`));
       }
     }
 
     setCheckingEntryPath(null);
-  }, [addLog]);
+  }, [addLog, runCallgraphAnalysis]);
 
   const fetchAnalysis = useCallback(async (info: RepoInfo, locale: AnalysisLocale) => {
     const allPaths = filterCodeFiles(info.tree);
@@ -368,6 +436,8 @@ function AnalyzeContent() {
     setAnalysisCache({});
     setEntryCheckResults({});
     setCheckingEntryPath(null);
+    setCallgraphResult(null);
+    setCallgraphLoading(false);
     setLogs([makeLogEntry("success", `GitHub URL 校验通过：${parsed.owner}/${parsed.repo}`)]);
 
     try {
@@ -651,13 +721,36 @@ function AnalyzeContent() {
         </div>
 
         {/* Right panel — code viewer */}
-        <div className="flex-1 flex flex-col overflow-hidden" style={{ background: "#0d1117" }}>
+        <div className="flex-1 flex flex-col overflow-hidden" style={{ background: "#0d1117", minWidth: 280 }}>
           <CodePanel
             path={selectedPath}
             content={fileContent}
             loading={fileLoading}
             error={fileError}
             locale={analysisLocale}
+          />
+        </div>
+
+        {/* Panorama panel resize separator */}
+        <div
+          role="separator"
+          aria-orientation="vertical"
+          onMouseDown={() => startResize("panorama")}
+          className="group relative w-1 shrink-0 cursor-col-resize bg-transparent"
+        >
+          <div className="absolute inset-y-0 left-0 w-px bg-[var(--border)] transition-colors group-hover:bg-[var(--accent)]" />
+        </div>
+
+        {/* Panorama panel — call graph tree */}
+        <div
+          className="shrink-0 flex flex-col overflow-hidden"
+          style={{ width: `${panoramaPanelWidth}px`, borderLeft: "1px solid var(--border)" }}
+        >
+          <PanoramaPanel
+            loading={callgraphLoading}
+            result={callgraphResult}
+            locale={analysisLocale}
+            onFileClick={handleEntryFileClick}
           />
         </div>
       </div>
