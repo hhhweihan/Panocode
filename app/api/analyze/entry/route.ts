@@ -1,5 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
+import {
+  ChatCompletionsResponseSchema,
+  extractText,
+  formatProviderError,
+  requestChatCompletionsWithFallback,
+} from "@/lib/llm";
+
+const AnalysisLocaleSchema = z.enum(["zh", "en"]);
 
 const EntryResultSchema = z.object({
   isEntry: z.boolean(),
@@ -9,104 +17,7 @@ const EntryResultSchema = z.object({
 
 export type EntryCheckResult = z.infer<typeof EntryResultSchema>;
 
-const ChatResponseSchema = z.object({
-  choices: z
-    .array(
-      z.object({
-        message: z.object({
-          content: z.union([
-            z.string(),
-            z.array(z.object({ type: z.string().optional(), text: z.string().optional() })),
-          ]).optional(),
-        }),
-      })
-    )
-    .optional(),
-  error: z.object({ message: z.string() }).optional(),
-});
-
-function normalizeBaseUrl(u: string) {
-  return u.replace(/\/+$/, "");
-}
-
-function extractText(content: string | { type?: string; text?: string }[] | undefined): string {
-  if (typeof content === "string") return content.trim();
-  if (Array.isArray(content)) return content.map((p) => p.text ?? "").join("").trim();
-  return "";
-}
-
-type ProviderConfig = {
-  provider: "github-models" | "llm";
-  apiKey: string;
-  baseUrl: string;
-  model: string;
-};
-
-function getProviderConfig(): ProviderConfig | null {
-  const githubToken = process.env.GITHUB_TOKEN;
-  const llmApiKey = process.env.LLM_API_KEY ?? process.env.GEMINI_API_KEY;
-  const useGithubModels = process.env.GITHUB_USE_MODELS === "true";
-
-  if (useGithubModels && githubToken) {
-    return {
-      provider: "github-models",
-      apiKey: githubToken,
-      baseUrl: normalizeBaseUrl(process.env.GITHUB_MODELS_BASE_URL ?? "https://models.inference.ai.azure.com"),
-      model: process.env.GITHUB_ENTRY_MODEL ?? "gpt-4o-mini",
-    };
-  }
-
-  if (llmApiKey) {
-    return {
-      provider: "llm",
-      apiKey: llmApiKey,
-      baseUrl: normalizeBaseUrl(process.env.LLM_BASE_URL ?? "https://generativelanguage.googleapis.com/v1beta/openai"),
-      model: process.env.LLM_MODEL ?? "gemini-3-flash-preview",
-    };
-  }
-
-  if (githubToken) {
-    return {
-      provider: "github-models",
-      apiKey: githubToken,
-      baseUrl: normalizeBaseUrl(process.env.GITHUB_MODELS_BASE_URL ?? "https://models.inference.ai.azure.com"),
-      model: process.env.GITHUB_ENTRY_MODEL ?? "gpt-4o-mini",
-    };
-  }
-
-  return null;
-}
-
-async function requestEntryAnalysis(config: ProviderConfig, prompt: string) {
-  return fetch(`${config.baseUrl}/chat/completions`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${config.apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: config.model,
-      temperature: 0,
-      response_format: { type: "json_object" },
-      messages: [
-        {
-          role: "system",
-          content:
-            "You analyze source code files to determine if they are project entry points. Return valid JSON only.",
-        },
-        { role: "user", content: prompt },
-      ],
-    }),
-  });
-}
-
 export async function POST(req: NextRequest) {
-  const providerConfig = getProviderConfig();
-
-  if (!providerConfig) {
-    return NextResponse.json({ error: "LLM_API_KEY or GITHUB_TOKEN is not configured" }, { status: 500 });
-  }
-
   const body = await req.json() as {
     repoUrl: string;
     repoName: string;
@@ -114,14 +25,20 @@ export async function POST(req: NextRequest) {
     languages: { name: string; percentage: number }[];
     filePath: string;
     fileContent: string;
+    locale?: "zh" | "en";
   };
 
   const { repoUrl, repoName, description, languages, filePath, fileContent } = body;
+  const locale = AnalysisLocaleSchema.catch("zh").parse(body.locale);
 
   const langSummary = languages
     .slice(0, 5)
     .map((l) => `${l.name} (${l.percentage}%)`)
     .join(", ");
+
+  const languageInstruction = locale === "zh"
+    ? "Write reason in Simplified Chinese. Keep code identifiers, framework names, and technical proper nouns in their original form when appropriate."
+    : "Write reason in English.";
 
   const prompt = `You are analyzing a GitHub repository to determine if a specific file is the project's main entry point.
 
@@ -141,7 +58,10 @@ Based on the file content and repository context, determine if this is the main 
 
 Common entry point indicators:
 - Contains main() / __main__ block / app startup code
-- Express/Fastify/Flask/FastAPI server initialization that is actually started
+- Express/Fastify/Koa/NestJS/Flask/FastAPI server initialization that is actually started
+- Django manage.py, wsgi.py, asgi.py, get_wsgi_application(), or exported app/application WSGI startup
+- Go Gin/Echo/Fiber or net/http server startup that actually registers routes and starts serving
+- PHP Laravel/Symfony front controller or route bootstrap such as public/index.php, artisan, or framework kernel bootstrap
 - React/Vue root render / createApp call in the top-level index file
 - CLI binary entry (#!/usr/bin/env shebang at top)
 - Build bootstrap, not just re-exports
@@ -151,37 +71,36 @@ Return JSON only. No markdown fences. Exact shape:
   "isEntry": boolean,
   "confidence": "high" | "medium" | "low",
   "reason": "one or two sentences explaining the determination"
-}`;
+}
+
+Language requirement:
+- ${languageInstruction}`;
 
   try {
-    let res = await requestEntryAnalysis(providerConfig, prompt);
-    let raw = ChatResponseSchema.parse(await res.json());
+    const { response: res, raw } = await requestChatCompletionsWithFallback({
+      payload: {
+        temperature: 0,
+        response_format: { type: "json_object" },
+        messages: [
+          {
+            role: "system",
+            content:
+              "You analyze source code files to determine if they are project entry points. Return valid JSON only.",
+          },
+          { role: "user", content: prompt },
+        ],
+      },
+      preferGithubModels: process.env.GITHUB_USE_MODELS === "true",
+    });
 
-    if (
-      !res.ok &&
-      providerConfig.provider === "github-models" &&
-      (raw.error?.message?.includes("models") || raw.error?.message?.includes("permission"))
-    ) {
-      const fallbackApiKey = process.env.LLM_API_KEY ?? process.env.GEMINI_API_KEY;
-      if (fallbackApiKey) {
-        const fallbackConfig: ProviderConfig = {
-          provider: "llm",
-          apiKey: fallbackApiKey,
-          baseUrl: normalizeBaseUrl(process.env.LLM_BASE_URL ?? "https://generativelanguage.googleapis.com/v1beta/openai"),
-          model: process.env.LLM_MODEL ?? "gemini-3-flash-preview",
-        };
-
-        res = await requestEntryAnalysis(fallbackConfig, prompt);
-        raw = ChatResponseSchema.parse(await res.json());
-      }
-    }
+    const parsedRaw = ChatCompletionsResponseSchema.parse(raw ?? {});
 
     if (!res.ok) {
-      const msg = raw.error?.message ?? "LLM API error";
+      const msg = formatProviderError(parsedRaw.error?.message ?? "LLM API error");
       return NextResponse.json({ error: msg }, { status: res.status });
     }
 
-    const text = extractText(raw.choices?.[0]?.message.content);
+    const text = extractText(parsedRaw.choices?.[0]?.message.content);
     if (!text) return NextResponse.json({ error: "Empty AI response" }, { status: 500 });
 
     const result = EntryResultSchema.parse(JSON.parse(text));

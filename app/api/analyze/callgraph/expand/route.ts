@@ -1,5 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
+import {
+  ChatCompletionsResponseSchema,
+  extractText,
+  formatProviderError,
+  requestChatCompletionsWithFallback,
+} from "@/lib/llm";
 
 const AnalysisLocaleSchema = z.enum(["zh", "en"]);
 
@@ -16,53 +22,32 @@ const CallgraphNodeSchema = z.object({
     z.union([z.literal(-1), z.literal(0), z.literal(1)]),
   ),
   description: z.string(),
+  nodeType: z.preprocess(
+    (v) => (typeof v === "string" && v.trim() ? v.trim().toLowerCase() : "function"),
+    z.union([
+      z.literal("function"),
+      z.literal("controller"),
+      z.literal("module"),
+      z.literal("framework"),
+    ]),
+  ),
+  routePath: z.preprocess(
+    (v) => (v === "" || v === "null" || v === "N/A" || v === null || typeof v === "undefined" ? null : v),
+    z.string().nullable(),
+  ),
+  bridgeNote: z.preprocess(
+    (v) => (v === "" || v === "null" || v === "N/A" || v === null || typeof v === "undefined" ? null : v),
+    z.string().nullable(),
+  ),
 });
 
 const ExpandResponseSchema = z.object({
   children: z.array(CallgraphNodeSchema).max(20),
 });
 
-const ChatResponseSchema = z.object({
-  choices: z
-    .array(
-      z.object({
-        message: z.object({
-          content: z.union([
-            z.string(),
-            z.array(z.object({ type: z.string().optional(), text: z.string().optional() })),
-          ]).optional(),
-        }),
-      }),
-    )
-    .optional(),
-  error: z.object({ message: z.string() }).optional(),
-});
-
-// ── Shared helpers ────────────────────────────────────────────────────────────
-
-function normalizeBaseUrl(u: string) {
-  return u.replace(/\/+$/, "");
-}
-
-function extractText(content: string | { type?: string; text?: string }[] | undefined): string {
-  if (typeof content === "string") return content.trim();
-  if (Array.isArray(content)) return content.map((p) => p.text ?? "").join("").trim();
-  return "";
-}
-
 // ── Route handler ─────────────────────────────────────────────────────────────
 
 export async function POST(req: NextRequest) {
-  const apiKey = process.env.LLM_API_KEY ?? process.env.GEMINI_API_KEY;
-  const baseUrl = normalizeBaseUrl(
-    process.env.LLM_BASE_URL ?? "https://generativelanguage.googleapis.com/v1beta/openai",
-  );
-  const model = process.env.LLM_MODEL ?? "gemini-2.0-flash";
-
-  if (!apiKey) {
-    return NextResponse.json({ error: "LLM_API_KEY is not configured" }, { status: 500 });
-  }
-
   const body = (await req.json()) as {
     repoName: string;
     functionName: string;
@@ -106,6 +91,9 @@ For each one provide:
 - likelyFile: best-guess relative file path from the repo root (pick from the file list above; use null if purely external/stdlib/third-party)
 - drillDown: 1 if this is a substantial internal sub-system worth further analysis, 0 if uncertain, -1 if trivial/external/stdlib
 - description: one sentence explaining what it does
+- nodeType: "controller" for HTTP handler/controller endpoints, otherwise "function", "module", or "framework"
+- routePath: HTTP URL or route pattern if this node handles one directly, otherwise null
+- bridgeNote: brief note only when this node is introduced by framework bridging rather than a direct code call, otherwise null
 
 Language requirement:
 - ${languageInstruction}
@@ -117,20 +105,17 @@ Return JSON only. No markdown fences. Exact shape:
       "name": "string",
       "likelyFile": "string | null",
       "drillDown": -1 | 0 | 1,
-      "description": "string"
+      "description": "string",
+      "nodeType": "function" | "controller" | "module" | "framework",
+      "routePath": "string | null",
+      "bridgeNote": "string | null"
     }
   ]
 }`;
 
   try {
-    const res = await fetch(`${baseUrl}/chat/completions`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model,
+    const { response: res, raw } = await requestChatCompletionsWithFallback({
+      payload: {
         temperature: 0,
         response_format: { type: "json_object" },
         messages: [
@@ -140,17 +125,17 @@ Return JSON only. No markdown fences. Exact shape:
           },
           { role: "user", content: prompt },
         ],
-      }),
+      },
     });
 
-    const raw = ChatResponseSchema.parse(await res.json());
+    const parsedRaw = ChatCompletionsResponseSchema.parse(raw ?? {});
 
     if (!res.ok) {
-      const msg = raw.error?.message ?? "LLM API error";
+      const msg = formatProviderError(parsedRaw.error?.message ?? "LLM API error");
       return NextResponse.json({ error: msg }, { status: res.status });
     }
 
-    const text = extractText(raw.choices?.[0]?.message.content);
+    const text = extractText(parsedRaw.choices?.[0]?.message.content);
     if (!text) return NextResponse.json({ error: "Empty AI response" }, { status: 500 });
 
     const parsed = ExpandResponseSchema.parse(JSON.parse(text));

@@ -1,5 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
+import {
+  ChatCompletionsResponseSchema,
+  extractText,
+  formatProviderError,
+  requestChatCompletionsWithFallback,
+} from "@/lib/llm";
 
 const AnalysisLocaleSchema = z.enum(["zh", "en"]);
 
@@ -39,44 +45,100 @@ const AnalysisSchema = z.object({
 export type AnalysisResult = z.infer<typeof AnalysisSchema>;
 export type AnalysisLocale = z.infer<typeof AnalysisLocaleSchema>;
 
-const ChatCompletionsResponseSchema = z.object({
-  choices: z.array(
-    z.object({
-      message: z.object({
-        content: z.union([
-          z.string(),
-          z.array(
-            z.object({
-              type: z.string().optional(),
-              text: z.string().optional(),
-            })
-          ),
-        ]).optional(),
-      }),
-    })
-  ).optional(),
-  error: z.object({
-    message: z.string(),
-  }).optional(),
-});
+const TECH_CATEGORY_VALUES = [
+  "framework",
+  "library",
+  "language",
+  "tool",
+  "database",
+  "platform",
+  "testing",
+  "devops",
+  "other",
+] as const;
 
-function normalizeBaseUrl(baseUrl: string) {
-  return baseUrl.replace(/\/+$/, "");
+type TechCategory = (typeof TECH_CATEGORY_VALUES)[number];
+
+function normalizeTechCategory(value: unknown): TechCategory {
+  if (typeof value !== "string") {
+    return "other";
+  }
+
+  const normalized = value.trim().toLowerCase().replace(/[\s_/.-]+/g, "");
+
+  switch (normalized) {
+    case "framework":
+    case "frameworks":
+      return "framework";
+    case "library":
+    case "libraries":
+    case "sdk":
+    case "package":
+    case "packages":
+      return "library";
+    case "language":
+    case "languages":
+      return "language";
+    case "tool":
+    case "tools":
+    case "buildtool":
+    case "buildtools":
+    case "cli":
+      return "tool";
+    case "database":
+    case "databases":
+    case "db":
+    case "storage":
+      return "database";
+    case "platform":
+    case "platforms":
+    case "runtime":
+    case "hosting":
+    case "cloud":
+      return "platform";
+    case "test":
+    case "tests":
+    case "testing":
+    case "testframework":
+    case "qa":
+      return "testing";
+    case "devops":
+    case "infrastructure":
+    case "infra":
+    case "ci":
+    case "cd":
+    case "cicd":
+    case "deployment":
+      return "devops";
+    case "other":
+    case "misc":
+    case "miscellaneous":
+      return "other";
+    default:
+      return TECH_CATEGORY_VALUES.includes(normalized as TechCategory)
+        ? (normalized as TechCategory)
+        : "other";
+  }
 }
 
-function getMessageText(content: string | { type?: string; text?: string }[] | undefined) {
-  if (typeof content === "string") {
-    return content.trim();
+function normalizeAnalysisResult(raw: unknown) {
+  if (!raw || typeof raw !== "object") {
+    return raw;
   }
 
-  if (Array.isArray(content)) {
-    return content
-      .map((part) => part.text || "")
-      .join("")
-      .trim();
-  }
+  const result = raw as {
+    techStack?: Array<{ name?: unknown; category?: unknown }>;
+  };
 
-  return "";
+  return {
+    ...result,
+    techStack: Array.isArray(result.techStack)
+      ? result.techStack.map((item) => ({
+          ...item,
+          category: normalizeTechCategory(item?.category),
+        }))
+      : result.techStack,
+  };
 }
 
 function extractJsonObject(text: string) {
@@ -94,19 +156,6 @@ function extractJsonObject(text: string) {
 }
 
 export async function POST(req: NextRequest) {
-  const apiKey = process.env.LLM_API_KEY ?? process.env.GEMINI_API_KEY;
-  const baseUrl = normalizeBaseUrl(
-    process.env.LLM_BASE_URL ?? "https://generativelanguage.googleapis.com/v1beta/openai"
-  );
-  const model = process.env.LLM_MODEL ?? "gemini3-flash-preview";
-
-  if (!apiKey) {
-    return NextResponse.json(
-      { error: "LLM_API_KEY is not configured on the server" },
-      { status: 500 }
-    );
-  }
-
   const body = await req.json() as {
     repoName: string;
     filePaths: string[];
@@ -180,35 +229,26 @@ Return JSON only. Do not wrap in markdown fences. Follow this exact shape:
 }`;
 
   try {
-    const response = await fetch(
-      `${baseUrl}/chat/completions`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          model,
-          temperature: 0.2,
-          messages: [
-            {
-              role: "system",
-              content: "You analyze repository file structures and must return valid JSON only.",
-            },
-            {
-              role: "user",
-              content: prompt,
-            },
-          ],
-        }),
-      }
-    );
+    const { response, raw } = await requestChatCompletionsWithFallback({
+      payload: {
+        temperature: 0.2,
+        messages: [
+          {
+            role: "system",
+            content: "You analyze repository file structures and must return valid JSON only.",
+          },
+          {
+            role: "user",
+            content: prompt,
+          },
+        ],
+      },
+    });
 
-    const rawData = ChatCompletionsResponseSchema.parse(await response.json());
+    const rawData = ChatCompletionsResponseSchema.parse(raw ?? {});
 
     if (!response.ok) {
-      const message = rawData.error?.message || "LLM API request failed";
+      const message = formatProviderError(rawData.error?.message || "LLM API request failed");
       if (response.status === 400 || response.status === 401 || response.status === 403) {
         return NextResponse.json({ error: `LLM API authentication failed: ${message}` }, { status: response.status });
       }
@@ -218,13 +258,14 @@ Return JSON only. Do not wrap in markdown fences. Follow this exact shape:
       return NextResponse.json({ error: `LLM API error: ${message}` }, { status: response.status });
     }
 
-    const text = getMessageText(rawData.choices?.[0]?.message.content);
+    const text = extractText(rawData.choices?.[0]?.message.content);
 
     if (!text) {
       return NextResponse.json({ error: "AI returned no result" }, { status: 500 });
     }
 
-    const result = AnalysisSchema.parse(JSON.parse(extractJsonObject(text)));
+    const parsedJson = JSON.parse(extractJsonObject(text));
+    const result = AnalysisSchema.parse(normalizeAnalysisResult(parsedJson));
     if (!result) {
       return NextResponse.json({ error: "AI returned no result" }, { status: 500 });
     }

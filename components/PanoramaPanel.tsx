@@ -11,7 +11,7 @@ import { getFunctionModule, type ModuleAnalysisResult } from "@/lib/moduleAnalys
 const ROOT_W = 260;
 const ROOT_H = 90;
 const CARD_W = 220;
-const CARD_H = 86;
+const CARD_H = 102;
 const COL_GAP = 64;         // horizontal gap between parent-right and child-left
 const CARD_GAP = 12;        // vertical gap between sibling cards
 const CONN_MARGIN = 20;     // connector vertical line is this far left of child column
@@ -42,6 +42,7 @@ const TEXT = {
     zoomIn:  "放大",
     zoomOut: "缩小",
     noFile:  "—",
+    endpoint: "URL",
     descriptionLanguage: "函数介绍",
     localeZh: "中文",
     localeEn: "English",
@@ -54,6 +55,7 @@ const TEXT = {
     zoomIn:  "Zoom in",
     zoomOut: "Zoom out",
     noFile:  "—",
+    endpoint: "URL",
     descriptionLanguage: "Descriptions",
     localeZh: "中文",
     localeEn: "English",
@@ -329,12 +331,13 @@ function ChildCard({ node, locale, onFileClick, isAnalyzing, moduleColor, isDimm
   const filename = node.likelyFile
     ? (node.likelyFile.split("/").pop() ?? node.likelyFile)
     : TEXT[locale].noFile;
+  const routePath = node.routePath?.trim() || null;
   const dimmed = node.drillDown === -1 || isDimmed;
 
   return (
     <div
       onClick={() => node.likelyFile && onFileClick(node.likelyFile)}
-      title={node.likelyFile ?? undefined}
+      title={[node.likelyFile, routePath].filter(Boolean).join("\n") || undefined}
       style={{
         position: "absolute",
         width: CARD_W,
@@ -428,13 +431,49 @@ function ChildCard({ node, locale, onFileClick, isAnalyzing, moduleColor, isDimm
             {node.name}
           </span>
         </div>
+        {routePath && (
+          <div
+            style={{
+              marginBottom: 4,
+              paddingLeft: 11,
+              display: "flex",
+              alignItems: "center",
+              gap: 4,
+            }}
+          >
+            <span
+              style={{
+                fontSize: 9,
+                color: "var(--muted)",
+                border: "1px solid var(--border)",
+                borderRadius: 999,
+                padding: "0px 4px",
+                flexShrink: 0,
+              }}
+            >
+              {TEXT[locale].endpoint}
+            </span>
+            <span
+              style={{
+                fontSize: 10,
+                color: "var(--accent)",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+                fontFamily: "var(--font-geist-mono, monospace)",
+              }}
+            >
+              {routePath}
+            </span>
+          </div>
+        )}
         <div
           style={{
             fontSize: 10,
             color: "var(--muted)",
             overflow: "hidden",
             display: "-webkit-box",
-            WebkitLineClamp: 2,
+            WebkitLineClamp: routePath ? 2 : 3,
             WebkitBoxOrient: "vertical",
             lineHeight: "1.4",
             paddingLeft: 11,

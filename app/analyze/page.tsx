@@ -564,6 +564,7 @@ function AnalyzeContent() {
     info: RepoInfo & { stars?: number },
     descriptionLocale: AnalysisLocale = callgraphDescriptionLocaleRef.current,
   ) => {
+    const currentAnalysis = analysisResultRef.current;
     confirmedEntryContextRef.current = { path: confirmedPath, fileContent, info };
     setWorkflowState({ state: "working", stage: "callgraph" });
     setCallgraphLoading(true);
@@ -580,6 +581,13 @@ function AnalyzeContent() {
         filePath: confirmedPath,
         fileContent,
         allFilePaths,
+        languages: currentAnalysis?.languages.map((item) => ({
+          name: item.name,
+          percentage: item.percentage,
+        })),
+        techStack: currentAnalysis?.techStack,
+        summary: currentAnalysis?.summary ?? null,
+        description: info.description ?? currentAnalysis?.summary ?? null,
         locale: descriptionLocale,
       };
       addLog(makeLogEntry("info", `调用图分析：请求关键子函数 ${confirmedPath}`, { request: callgraphRequest }));
@@ -600,9 +608,12 @@ function AnalyzeContent() {
       setCallgraphResult(result);
       addLog(makeLogEntry(
         "success",
-        `调用图分析完成：${result.rootFunction} 识别到 ${result.children.length} 个关键子函数`,
+        `调用图分析完成：${result.rootFunction} 识别到 ${result.children.length} 个关键子函数${result.bridge ? `，已启用 ${result.bridge.strategyName}` : ""}`,
         { response: data },
       ));
+      if (result.bridge) {
+        addLog(makeLogEntry("info", `桥接模式：${result.bridge.reason}`));
+      }
 
       setWorkflowState({ state: "working", stage: "recursive" });
       const finalResult = await runRecursiveAnalysis(result, info, fileContent, descriptionLocale);
@@ -742,6 +753,7 @@ function AnalyzeContent() {
           body: JSON.stringify({
             repoUrl: `https://github.com/${info.fullName}`,
             repoName: info.fullName,
+            locale: analysisLocaleRef.current,
             description: info.description ?? null,
             languages: languages.map((l) => ({ name: l.name, percentage: l.percentage })),
             filePath: entry.path,
@@ -1200,6 +1212,7 @@ function AnalyzeContent() {
                 result={analysisResult}
                 repoInfo={repoInfo}
                 moduleAnalysis={moduleAnalysis}
+                callgraphBridge={callgraphResult?.bridge ?? null}
                 selectedModuleId={selectedModuleId}
                 locale={analysisLocale}
                 onLocaleChange={handleAnalysisLocaleChange}
