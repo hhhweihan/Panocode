@@ -32,6 +32,9 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({
       info,
       tree,
+      source: "local",
+      displayName: info.name,
+      localPath: resolved,
       // Synthetic RepoInfo fields
       owner: "",
       repo: info.name,

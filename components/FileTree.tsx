@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { memo, useState } from "react";
 import {
   ChevronRight,
   ChevronDown,
@@ -97,7 +97,7 @@ interface FileTreeProps {
   onFileClick: (node: TreeNode) => void;
 }
 
-export default function FileTree({ tree, selectedPath, onFileClick }: FileTreeProps) {
+function FileTree({ tree, selectedPath, onFileClick }: FileTreeProps) {
   return (
     <div className="py-2">
       {tree.map((node) => (
@@ -112,3 +112,5 @@ export default function FileTree({ tree, selectedPath, onFileClick }: FileTreePr
     </div>
   );
 }
+
+export default memo(FileTree);

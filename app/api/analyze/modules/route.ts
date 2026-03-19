@@ -115,8 +115,8 @@ export async function POST(req: NextRequest) {
 
   const prompt = `You are analyzing a software project's full function call panorama and need to group all analyzed functions into high-level functional modules.
 
-Repository: ${repoName}
-URL: ${repoUrl}
+Project: ${repoName}
+Location: ${repoUrl}
 Project description: ${description ?? "N/A"}
 Project summary: ${summary ?? "N/A"}
 Languages: ${languages.map((item) => `${item.name} (${item.percentage}%)`).join(", ")}

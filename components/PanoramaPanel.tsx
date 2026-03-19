@@ -1,6 +1,6 @@
 "use client";
 
-import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, ChevronUp, Download, FileJson, Image, Loader2, Minus, Network, Plus, RefreshCcw, Sparkles, ZoomIn, ZoomOut } from "lucide-react";
 import type { CallgraphResult, CallgraphNode } from "@/app/api/analyze/callgraph/route";
 import type { AnalysisLocale } from "@/components/AnalysisPanel";
@@ -608,7 +608,7 @@ interface PanoramaPanelProps {
   repoName?: string;
 }
 
-export default function PanoramaPanel({
+function PanoramaPanel({
   loading,
   result,
   moduleAnalysis,
@@ -1220,3 +1220,5 @@ export default function PanoramaPanel({
     </div>
   );
 }
+
+export default memo(PanoramaPanel);

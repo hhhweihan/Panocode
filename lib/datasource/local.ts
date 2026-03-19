@@ -2,7 +2,12 @@
 import fs from "fs";
 import path from "path";
 import type { TreeNode } from "@/lib/github";
-import type { ProjectInfo } from "@/lib/datasource/index";
+import type {
+  DataSource,
+  FileContentSearchMatch,
+  FileContentSearchOptions,
+  ProjectInfo,
+} from "@/lib/datasource/index";
 
 const SKIP_DIRS = new Set([
   "node_modules", ".git", "dist", "build", ".next",
@@ -47,18 +52,78 @@ function walkDir(dir: string, root: string): TreeNode[] {
   return [...dirs, ...files];
 }
 
-export class LocalDataSource {
+function createSearchRegExp(query: RegExp | string, caseSensitive: boolean) {
+  if (query instanceof RegExp) {
+    const flags = query.flags.includes("g") ? query.flags : `${query.flags}g`;
+    return new RegExp(query.source, caseSensitive ? flags.replace(/i/g, "") : flags.includes("i") ? flags : `${flags}i`);
+  }
+
+  const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(escaped, caseSensitive ? "g" : "gi");
+}
+
+function flattenBlobPaths(tree: TreeNode[]): string[] {
+  const paths: string[] = [];
+
+  const walk = (nodes: TreeNode[]) => {
+    for (const node of nodes) {
+      if (node.type === "blob") {
+        paths.push(node.path);
+        continue;
+      }
+
+      if (node.children) {
+        walk(node.children);
+      }
+    }
+  };
+
+  walk(tree);
+  return paths;
+}
+
+function collectMatches(
+  content: string,
+  filePath: string,
+  matcher: RegExp,
+  maxResults: number,
+  results: FileContentSearchMatch[],
+) {
+  const lines = content.split(/\r?\n/);
+
+  for (let index = 0; index < lines.length; index += 1) {
+    matcher.lastIndex = 0;
+    if (!matcher.test(lines[index])) {
+      continue;
+    }
+
+    results.push({
+      path: filePath,
+      lineNumber: index + 1,
+      line: lines[index],
+    });
+
+    if (results.length >= maxResults) {
+      return;
+    }
+  }
+}
+
+export class LocalDataSource implements DataSource {
   private resolvedRoot: string;
+  private cachedTree: TreeNode[] | null = null;
 
   constructor(root: string) {
     this.resolvedRoot = path.resolve(root);
   }
 
   async getTree(): Promise<{ info: ProjectInfo; tree: TreeNode[] }> {
-    const tree = walkDir(this.resolvedRoot, this.resolvedRoot);
+    const tree = this.cachedTree ?? walkDir(this.resolvedRoot, this.resolvedRoot);
+    this.cachedTree = tree;
     const info: ProjectInfo = {
       name: path.basename(this.resolvedRoot),
       source: "local",
+      fullName: this.resolvedRoot,
     };
     return { info, tree };
   }
@@ -92,5 +157,29 @@ export class LocalDataSource {
     const sample = buf.subarray(0, 8192);
     if (sample.includes(0)) return "";
     return buf.toString("utf8");
+  }
+
+  async searchFileContent(options: FileContentSearchOptions): Promise<FileContentSearchMatch[]> {
+    const { tree } = await this.getTree();
+    const matcher = createSearchRegExp(options.query, options.caseSensitive ?? false);
+    const maxResults = options.maxResults ?? 20;
+    const results: FileContentSearchMatch[] = [];
+
+    for (const filePath of flattenBlobPaths(tree)) {
+      let content: string;
+
+      try {
+        content = await this.getFile(filePath);
+      } catch {
+        continue;
+      }
+
+      collectMatches(content, filePath, matcher, maxResults, results);
+      if (results.length >= maxResults) {
+        break;
+      }
+    }
+
+    return results;
   }
 }

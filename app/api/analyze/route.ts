@@ -202,7 +202,7 @@ export async function POST(req: NextRequest) {
     repoContext?.topics && repoContext.topics.length > 0 ? `Topics: ${repoContext.topics.join(", ")}` : null,
   ].filter(Boolean).join("\n");
 
-  const prompt = `You are a software project analyzer. Analyze the file structure of this GitHub repository and return a structured analysis.
+  const prompt = `You are a software project analyzer. Analyze the file structure of this software project and return a structured analysis.
 
 Repository: ${repoName}
 ${repoDetails ? `Repository details:\n${repoDetails}\n` : ""}

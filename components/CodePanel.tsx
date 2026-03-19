@@ -1,10 +1,10 @@
 "use client";
 
+import { memo, useEffect, useState } from "react";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneDark, oneLight } from "react-syntax-highlighter/dist/esm/styles/prism";
 import { getLanguageFromPath } from "@/lib/github";
 import { Copy, Check } from "lucide-react";
-import { useEffect, useState } from "react";
 import type { AnalysisLocale } from "@/components/AnalysisPanel";
 import { useTheme } from "@/lib/theme";
 
@@ -48,7 +48,7 @@ const TEXT = {
   },
 } as const;
 
-export default function CodePanel({ path, content, loading, error, locale }: CodePanelProps) {
+function CodePanel({ path, content, loading, error, locale }: CodePanelProps) {
   const [copied, setCopied] = useState(false);
   const [fontSize, setFontSize] = useState(() => {
     if (typeof window === "undefined") {
@@ -204,3 +204,5 @@ export default function CodePanel({ path, content, loading, error, locale }: Cod
     </div>
   );
 }
+
+export default memo(CodePanel);

@@ -64,7 +64,7 @@ export async function POST(req: NextRequest) {
     ? "Write description in Simplified Chinese. Keep code identifiers, file paths, library names, and technical proper nouns in their standard original form when appropriate."
     : "Write description in English.";
 
-  const prompt = `You are analyzing a specific function in a GitHub repository to identify its key direct callees.
+  const prompt = `You are analyzing a specific function in a software project to identify its key direct callees.
 
 Repository: ${repoName}
 File: ${filePath}

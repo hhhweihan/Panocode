@@ -26,9 +26,9 @@ export async function POST(req: NextRequest) {
   const { repoName, functionName, callerFile, allFilePaths } = body;
   const fileListSample = allFilePaths.slice(0, 300).join("\n");
 
-  const prompt = `You are helping locate where a function is defined in a GitHub repository.
+  const prompt = `You are helping locate where a function is defined in a software project.
 
-Repository: ${repoName}
+Project: ${repoName}
 Function name: ${functionName}
 Called from file: ${callerFile}
 

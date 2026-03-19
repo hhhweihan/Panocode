@@ -40,10 +40,10 @@ export async function POST(req: NextRequest) {
     ? "Write reason in Simplified Chinese. Keep code identifiers, framework names, and technical proper nouns in their original form when appropriate."
     : "Write reason in English.";
 
-  const prompt = `You are analyzing a GitHub repository to determine if a specific file is the project's main entry point.
+  const prompt = `You are analyzing a software project to determine if a specific file is the project's main entry point.
 
-Repository: ${repoName}
-URL: ${repoUrl}
+Project: ${repoName}
+Location: ${repoUrl}
 Description: ${description ?? "N/A"}
 Primary Languages: ${langSummary}
 
