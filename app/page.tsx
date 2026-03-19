@@ -1,15 +1,16 @@
 "use client";
 
-import { useState, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { useRouter } from "next/navigation";
 import { parseGithubUrl } from "@/lib/github";
-import { ArrowRight, Github, History } from "lucide-react";
+import { ArrowRight, FolderOpen, Github, History } from "lucide-react";
 import {
   subscribeHistorySummaries,
   getHistorySummariesSnapshot,
   getEmptyHistorySummaries,
 } from "@/lib/storage";
 import type { AnalysisRecordSummary } from "@/lib/storage";
+import * as localFileStore from "@/lib/localFileStore";
 
 function HistoryCard({
   summary,
@@ -23,9 +24,11 @@ function HistoryCard({
     month: "short",
     day: "numeric",
   });
-  const displayUrl = summary.url
-    .replace(/^https?:\/\//, "")
-    .replace(/\/+$/, "");
+
+  const isLocal = (summary.source ?? "github") === "local";
+  const displayUrl = isLocal
+    ? summary.url
+    : summary.url.replace(/^https?:\/\//, "").replace(/\/+$/, "");
 
   return (
     <button
@@ -44,15 +47,25 @@ function HistoryCard({
       }}
     >
       <div className="flex items-start justify-between gap-2">
-        <span className="text-sm font-medium truncate" style={{ color: "var(--text)" }}>
-          {summary.repoName}
-        </span>
+        <div className="flex items-center gap-1.5 min-w-0">
+          {isLocal ? (
+            <FolderOpen size={13} style={{ color: "var(--muted)", flexShrink: 0 }} />
+          ) : (
+            <Github size={13} style={{ color: "var(--muted)", flexShrink: 0 }} />
+          )}
+          <span className="text-sm font-medium truncate" style={{ color: "var(--text)" }}>
+            {summary.repoName}
+          </span>
+        </div>
         <span className="text-xs shrink-0" style={{ color: "var(--muted)" }}>
           {date}
         </span>
       </div>
       <div className="mt-0.5 text-xs truncate" style={{ color: "var(--muted)" }}>
         {displayUrl}
+      </div>
+      <div className="mt-1 text-[11px]" style={{ color: "var(--muted)" }}>
+        {isLocal ? "本地项目" : "GitHub 仓库"}
       </div>
       {summary.topLanguages.length > 0 && (
         <div className="mt-1.5 flex items-center gap-2.5">
@@ -85,6 +98,24 @@ export default function HomePage() {
     getEmptyHistorySummaries,
   );
 
+  const [activeTab, setActiveTab] = useState<"github" | "local">("github");
+  const [localPath, setLocalPath] = useState("");
+  const [localError, setLocalError] = useState("");
+  const [localPickerMode, setLocalPickerMode] = useState<"server" | "client">("server");
+  const [mounted, setMounted] = useState(false);
+
+  const githubHistory = useMemo(
+    () => history.filter((item) => (item.source ?? "github") !== "local").slice(0, 6),
+    [history],
+  );
+  const localHistory = useMemo(
+    () => history.filter((item) => (item.source ?? "github") === "local").slice(0, 6),
+    [history],
+  );
+
+  // eslint-disable-next-line react-hooks/set-state-in-effect
+  useEffect(() => { setMounted(true); }, []);
+
   const handleAnalyze = () => {
     const trimmed = url.trim();
     if (!trimmed) {
@@ -109,7 +140,62 @@ export default function HomePage() {
     if (error) setError("");
   };
 
+  const handleLocalAnalyze = () => {
+    if (!localPath.trim() && localPickerMode === "server") {
+      setLocalError("请输入本地项目路径");
+      return;
+    }
+    setLocalError("");
+    if (localPickerMode === "client") {
+      const name = localPath || "local-project";
+      router.push(`/analyze?source=local&mode=client&name=${encodeURIComponent(name)}`);
+    } else {
+      router.push(`/analyze?source=local&path=${encodeURIComponent(localPath.trim())}`);
+    }
+  };
+
+  const handlePickerClick = async () => {
+    type WinWithPicker = Window & { showDirectoryPicker: () => Promise<FileSystemDirectoryHandle> };
+    if (typeof window === "undefined" || typeof (window as unknown as { showDirectoryPicker?: unknown }).showDirectoryPicker !== "function") {
+      return;
+    }
+    try {
+      const handle = await (window as unknown as WinWithPicker).showDirectoryPicker();
+      localFileStore.setHandle(handle);
+      setLocalPath(handle.name);
+      setLocalPickerMode("client");
+      setLocalError("");
+    } catch {
+      // User cancelled — no-op
+    }
+  };
+
+  const handleLocalPathChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setLocalPath(e.target.value);
+    setLocalPickerMode("server");
+    localFileStore.clearHandle();
+    if (localError) setLocalError("");
+  };
+
   const examples = ["vercel/next.js", "facebook/react", "microsoft/vscode"];
+
+  const handleHistoryOpen = (item: AnalysisRecordSummary) => {
+    const isLocal = (item.source ?? "github") === "local";
+    if (!isLocal) {
+      router.push(`/analyze?url=${encodeURIComponent(item.url)}&historyId=${item.id}`);
+      return;
+    }
+
+    if (item.url.startsWith("local:")) {
+      const displayName = item.url.slice("local:".length) || item.repoName;
+      router.push(
+        `/analyze?source=local&mode=client&name=${encodeURIComponent(displayName)}&historyId=${item.id}`,
+      );
+      return;
+    }
+
+    router.push(`/analyze?source=local&path=${encodeURIComponent(item.url)}&historyId=${item.id}`);
+  };
 
   return (
     <main
@@ -175,65 +261,147 @@ export default function HomePage() {
           Explore any GitHub repository — visualize structure, browse files
         </p>
 
-        {/* Input */}
-        <div className="w-full">
-          <div
-            className="flex items-center gap-2 rounded-xl border px-4 py-3 transition-colors"
-            style={{
-              background: "var(--panel)",
-              borderColor: error ? "var(--error)" : "var(--border)",
-            }}
-          >
-            <Github
-              size={18}
-              style={{ color: "var(--muted)", flexShrink: 0 }}
-            />
-            <input
-              type="text"
-              value={url}
-              onChange={handleChange}
-              onKeyDown={handleKeyDown}
-              placeholder="https://github.com/owner/repository"
-              className="flex-1 bg-transparent outline-none text-base"
-              style={{ color: "var(--text)" }}
-              autoFocus
-            />
+        {/* Tab bar */}
+        <div className="flex gap-0 mb-6 border-b w-full" style={{ borderColor: "var(--border)" }}>
+          {(["github", "local"] as const).map((tab) => (
             <button
-              onClick={handleAnalyze}
-              className="flex items-center gap-2 px-4 py-1.5 rounded-lg text-sm font-semibold transition-colors shrink-0"
-              style={{ background: "var(--accent)", color: "var(--accent-contrast)" }}
-            >
-              Analyze
-              <ArrowRight size={15} />
-            </button>
-          </div>
-
-          {error && (
-            <p className="mt-2 text-sm text-left" style={{ color: "var(--error)" }}>
-              {error}
-            </p>
-          )}
-        </div>
-
-        {/* Examples */}
-        <div className="mt-6 flex flex-wrap items-center justify-center gap-2">
-          <span className="text-xs" style={{ color: "var(--muted)" }}>
-            Try:
-          </span>
-          {examples.map((ex) => (
-            <button
-              key={ex}
-              onClick={() => {
-                setUrl(`https://github.com/${ex}`);
-                setError("");
+              key={tab}
+              onClick={() => setActiveTab(tab)}
+              className="px-4 py-2 text-sm font-medium transition-colors"
+              style={{
+                color: activeTab === tab ? "var(--accent)" : "var(--muted)",
+                borderBottom: activeTab === tab ? "2px solid var(--accent)" : "2px solid transparent",
+                marginBottom: "-1px",
+                background: "transparent",
               }}
-              className="text-xs px-3 py-1 rounded-full border transition-colors"
-              style={{ color: "var(--muted)", borderColor: "var(--border)" }}
             >
-              {ex}
+              {tab === "github" ? "GitHub 分析" : "本地项目"}
             </button>
           ))}
         </div>
+
+        {/* GitHub tab */}
+        {activeTab === "github" && (
+          <div className="w-full">
+            {/* Input */}
+            <div
+              className="flex items-center gap-2 rounded-xl border px-4 py-3 transition-colors"
+              style={{
+                background: "var(--panel)",
+                borderColor: error ? "var(--error)" : "var(--border)",
+              }}
+            >
+              <Github
+                size={18}
+                style={{ color: "var(--muted)", flexShrink: 0 }}
+              />
+              <input
+                type="text"
+                value={url}
+                onChange={handleChange}
+                onKeyDown={handleKeyDown}
+                placeholder="https://github.com/owner/repository"
+                className="flex-1 bg-transparent outline-none text-base"
+                style={{ color: "var(--text)" }}
+                autoFocus
+              />
+              <button
+                onClick={handleAnalyze}
+                className="flex items-center gap-2 px-4 py-1.5 rounded-lg text-sm font-semibold transition-colors shrink-0"
+                style={{ background: "var(--accent)", color: "var(--accent-contrast)" }}
+              >
+                Analyze
+                <ArrowRight size={15} />
+              </button>
+            </div>
+
+            {error && (
+              <p className="mt-2 text-sm text-left" style={{ color: "var(--error)" }}>
+                {error}
+              </p>
+            )}
+
+            {/* Examples */}
+            <div className="mt-6 flex flex-wrap items-center justify-center gap-2">
+              <span className="text-xs" style={{ color: "var(--muted)" }}>
+                Try:
+              </span>
+              {examples.map((ex) => (
+                <button
+                  key={ex}
+                  onClick={() => {
+                    setUrl(`https://github.com/${ex}`);
+                    setError("");
+                  }}
+                  className="text-xs px-3 py-1 rounded-full border transition-colors"
+                  style={{ color: "var(--muted)", borderColor: "var(--border)" }}
+                >
+                  {ex}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Local tab */}
+        {activeTab === "local" && (
+          <div className="w-full">
+            {mounted && typeof window !== "undefined" &&
+              typeof (window as unknown as { showDirectoryPicker?: unknown }).showDirectoryPicker === "function" && (
+              <button
+                onClick={handlePickerClick}
+                className="mb-3 flex items-center gap-2 px-4 py-2 rounded-lg border text-sm transition-colors"
+                style={{
+                  borderColor: "var(--border)",
+                  background: "var(--panel)",
+                  color: "var(--text)",
+                }}
+              >
+                <FolderOpen size={16} />
+                选择文件夹
+              </button>
+            )}
+
+            <div
+              className="flex items-center gap-2 rounded-xl border px-4 py-3 transition-colors"
+              style={{
+                background: "var(--panel)",
+                borderColor: localError ? "var(--error, #ef4444)" : "var(--border)",
+              }}
+            >
+              <FolderOpen size={18} style={{ color: "var(--muted)", flexShrink: 0 }} />
+              <input
+                type="text"
+                value={localPath}
+                onChange={handleLocalPathChange}
+                onKeyDown={(e) => { if (e.key === "Enter") handleLocalAnalyze(); }}
+                placeholder="C:\Users\me\my-project  或  /home/me/my-project"
+                className="flex-1 bg-transparent outline-none text-base"
+                style={{ color: "var(--text)" }}
+              />
+              <button
+                onClick={handleLocalAnalyze}
+                className="flex items-center gap-2 px-4 py-1.5 rounded-lg text-sm font-semibold transition-colors shrink-0"
+                style={{ background: "var(--accent)", color: "var(--accent-contrast)" }}
+              >
+                Analyze
+                <ArrowRight size={15} />
+              </button>
+            </div>
+
+            {localError && (
+              <p className="mt-2 text-sm text-left" style={{ color: "var(--error, #ef4444)" }}>
+                {localError}
+              </p>
+            )}
+
+            {localPickerMode === "client" && localPath && (
+              <p className="mt-2 text-xs text-left" style={{ color: "var(--muted)" }}>
+                已选择文件夹：{localPath}（将在浏览器中直接读取）
+              </p>
+            )}
+          </div>
+        )}
 
         {/* Recent analyses */}
         {history.length > 0 && (
@@ -247,18 +415,42 @@ export default function HomePage() {
                 Recent analyses
               </span>
             </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-              {history.slice(0, 6).map((item) => (
-                <HistoryCard
-                  key={item.id}
-                  summary={item}
-                  onClick={() =>
-                    router.push(
-                      `/analyze?url=${encodeURIComponent(item.url)}&historyId=${item.id}`
-                    )
-                  }
-                />
-              ))}
+            <div className="space-y-5">
+              {githubHistory.length > 0 && (
+                <section>
+                  <div className="mb-2 flex items-center gap-2 text-xs" style={{ color: "var(--muted)" }}>
+                    <Github size={12} />
+                    <span>GitHub 仓库</span>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    {githubHistory.map((item) => (
+                      <HistoryCard
+                        key={item.id}
+                        summary={item}
+                        onClick={() => handleHistoryOpen(item)}
+                      />
+                    ))}
+                  </div>
+                </section>
+              )}
+
+              {localHistory.length > 0 && (
+                <section>
+                  <div className="mb-2 flex items-center gap-2 text-xs" style={{ color: "var(--muted)" }}>
+                    <FolderOpen size={12} />
+                    <span>本地项目</span>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    {localHistory.map((item) => (
+                      <HistoryCard
+                        key={item.id}
+                        summary={item}
+                        onClick={() => handleHistoryOpen(item)}
+                      />
+                    ))}
+                  </div>
+                </section>
+              )}
             </div>
           </div>
         )}

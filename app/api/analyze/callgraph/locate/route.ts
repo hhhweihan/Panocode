@@ -4,8 +4,10 @@ import {
   ChatCompletionsResponseSchema,
   extractText,
   formatProviderError,
+  parseJsonObject,
   requestChatCompletionsWithFallback,
 } from "@/lib/llm";
+import { resolveRuntimeSettings } from "@/lib/runtimeSettings";
 
 // ── Zod schemas ───────────────────────────────────────────────────────────────
 
@@ -21,14 +23,19 @@ export async function POST(req: NextRequest) {
     functionName: string;
     callerFile: string;
     allFilePaths: string[];
+    settings?: unknown;
   };
 
   const { repoName, functionName, callerFile, allFilePaths } = body;
+  const { settings } = resolveRuntimeSettings({
+    bodySettings: body.settings,
+    headerSettings: req.headers.get("x-panocode-runtime-settings"),
+  });
   const fileListSample = allFilePaths.slice(0, 300).join("\n");
 
-  const prompt = `You are helping locate where a function is defined in a GitHub repository.
+  const prompt = `You are helping locate where a function is defined in a software project.
 
-Repository: ${repoName}
+Project: ${repoName}
 Function name: ${functionName}
 Called from file: ${callerFile}
 
@@ -63,6 +70,7 @@ Return JSON only. No markdown fences. Exact shape:
           { role: "user", content: prompt },
         ],
       },
+      settings,
     });
 
     const parsedRaw = ChatCompletionsResponseSchema.parse(raw ?? {});
@@ -75,7 +83,7 @@ Return JSON only. No markdown fences. Exact shape:
     const text = extractText(parsedRaw.choices?.[0]?.message.content);
     if (!text) return NextResponse.json({ error: "Empty AI response" }, { status: 500 });
 
-    const parsed = LocateResponseSchema.parse(JSON.parse(text));
+    const parsed = LocateResponseSchema.parse(parseJsonObject(text));
     return NextResponse.json(parsed);
   } catch (err) {
     if (err instanceof z.ZodError) {

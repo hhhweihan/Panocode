@@ -21,6 +21,7 @@ LLM_MODEL        # Model name (e.g. qwen-plus, gemini-2.0-flash)
 GITHUB_TOKEN     # Optional: GitHub PAT for higher rate limits and GitHub Models
 GITHUB_USE_MODELS=true  # Optional: use GitHub Models for entry analysis
 NEXT_PUBLIC_CALLGRAPH_MAX_DEPTH=2  # Optional: recursion depth (default 2)
+NEXT_PUBLIC_CALLGRAPH_KEY_CHILDREN_LIMIT=10  # Optional: key child call limit (default 10)
 ```
 
 ## Architecture

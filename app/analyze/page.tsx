@@ -1,16 +1,19 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState, Suspense } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { parseGithubUrl, type RepoInfo, type TreeNode } from "@/lib/github";
 import { filterCodeFiles } from "@/lib/codeFilter";
 import { makeLogEntry, type LogEntry } from "@/lib/logger";
+import * as localFileStore from "@/lib/localFileStore";
+import { buildLocalTree, readLocalFile } from "@/lib/localTreeBuilder";
 import FileTree from "@/components/FileTree";
 import CodePanel from "@/components/CodePanel";
 import AnalysisPanel from "@/components/AnalysisPanel";
 import type { AnalysisLocale, EntryCheckResult } from "@/components/AnalysisPanel";
 import LogPanel from "@/components/LogPanel";
 import PanoramaPanel from "@/components/PanoramaPanel";
+import { useRuntimeSettings } from "@/components/RuntimeSettingsProvider";
 import type { AnalysisResult } from "@/app/api/analyze/route";
 import type { CallgraphResult, CallgraphNode } from "@/app/api/analyze/callgraph/route";
 import {
@@ -23,6 +26,7 @@ import { saveRecord, getRecordById } from "@/lib/storage";
 import type { AnalysisRecord } from "@/lib/storage";
 import { buildMarkdown, downloadMarkdown } from "@/lib/markdownExport";
 import { flattenCallgraphFunctions, type ModuleAnalysisResult } from "@/lib/moduleAnalysis";
+import { buildRuntimeSettingsHeaders } from "@/lib/runtimeSettings";
 import {
   Github,
   ArrowRight,
@@ -33,6 +37,7 @@ import {
   Loader2,
   RefreshCcw,
   Download,
+  FolderOpen,
 } from "lucide-react";
 
 const LEFT_PANEL_MIN_WIDTH = 260;
@@ -41,6 +46,13 @@ const TREE_PANEL_MIN_WIDTH = 220;
 const TREE_PANEL_MAX_WIDTH = 520;
 const PANORAMA_PANEL_MIN_WIDTH = 300;
 const PANORAMA_PANEL_MAX_WIDTH = 900;
+
+type AnalyzedProjectInfo = RepoInfo & {
+  source?: "github" | "local";
+  displayName?: string;
+  localPath?: string | null;
+  stars?: number;
+};
 
 function clampWidth(width: number, min: number, max: number) {
   return Math.min(Math.max(width, min), max);
@@ -130,11 +142,18 @@ function countFiles(tree: TreeNode[]): { files: number; dirs: number } {
 function AnalyzeContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const source = searchParams.get("source") === "local" ? "local" : "github";
+  const localMode = searchParams.get("mode") === "client" ? "client" : "server";
+  const localPath = searchParams.get("path") ?? "";
+  const localName = searchParams.get("name") ?? "";
+  const { settings, hydrated: settingsHydrated } = useRuntimeSettings();
 
   const [inputUrl, setInputUrl] = useState("");
   const [inputError, setInputError] = useState("");
+  const [mounted, setMounted] = useState(false);
 
-  const [repoInfo, setRepoInfo] = useState<RepoInfo & { stars?: number } | null>(null);
+  const [repoInfo, setRepoInfo] = useState<AnalyzedProjectInfo | null>(null);
+  const repoInfoRef = useRef<AnalyzedProjectInfo | null>(null);
   const [treeLoading, setTreeLoading] = useState(false);
   const [treeError, setTreeError] = useState<string | null>(null);
 
@@ -175,6 +194,14 @@ function AnalyzeContent() {
   const [isRestoredFromHistory, setIsRestoredFromHistory] = useState(false);
   const [currentRecordId, setCurrentRecordId] = useState<string | null>(null);
 
+  const runtimeSettingsHeaders = useMemo(() => buildRuntimeSettingsHeaders(settings), [settings]);
+  const attachRuntimeSettings = useCallback(<T extends Record<string, unknown>>(payload: T) => {
+    return {
+      ...payload,
+      settings,
+    };
+  }, [settings]);
+
   // Stale-closure-safe refs for save trigger
   const analysisResultRef = useRef<typeof analysisResult>(null);
   const entryCheckResultsRef = useRef<Record<string, import("@/app/api/analyze/entry/route").EntryCheckResult>>({});
@@ -188,13 +215,17 @@ function AnalyzeContent() {
   const confirmedEntryContextRef = useRef<{
     path: string;
     fileContent: string;
-    info: RepoInfo & { stars?: number };
+    info: AnalyzedProjectInfo;
   } | null>(null);
   const runModuleAnalysisRef = useRef<((
     graphResult: CallgraphResult,
-    info: RepoInfo & { stars?: number },
+    info: AnalyzedProjectInfo,
   ) => Promise<ModuleAnalysisResult | null>) | null>(null);
   const text = UI_TEXT[analysisLocale];
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   useEffect(() => {
     const savedMode = window.localStorage.getItem("panocode-log-panel-mode");
@@ -291,8 +322,24 @@ function AnalyzeContent() {
   useEffect(() => { moduleAnalysisRef.current = moduleAnalysis; }, [moduleAnalysis]);
   useEffect(() => { logsRef.current = logs; }, [logs]);
 
+  const getProjectName = useCallback((info: AnalyzedProjectInfo) => {
+    if (info.source === "local") {
+      return (info.displayName ?? info.repo) || info.fullName;
+    }
+
+    return info.fullName;
+  }, []);
+
+  const getProjectLocation = useCallback((info: AnalyzedProjectInfo) => {
+    if (info.source === "local") {
+      return info.localPath ?? info.fullName;
+    }
+
+    return `https://github.com/${info.fullName}`;
+  }, []);
+
   const triggerSave = useCallback((
-    info: import("@/lib/github").RepoInfo & { stars?: number },
+    info: AnalyzedProjectInfo,
   ) => {
     if (isRestoredFromHistory) return;
     const result = analysisResultRef.current;
@@ -302,6 +349,8 @@ function AnalyzeContent() {
       id: String(Date.now()),
       analyzedAt: new Date().toISOString(),
       url: analyzeUrlRef.current,
+      source: info.source ?? source,
+      displayName: info.source === "local" ? (info.displayName ?? info.repo) : undefined,
       repoMeta: {
         owner: info.owner,
         repo: info.repo,
@@ -326,10 +375,60 @@ function AnalyzeContent() {
     };
     saveRecord(record);
     setCurrentRecordId(record.id);
-  }, [isRestoredFromHistory]);
+  }, [isRestoredFromHistory, source]);
+
+  const fetchFileContent = useCallback(async (
+    filePath: string,
+  ): Promise<string | null> => {
+    if (source === "github") {
+      const info = repoInfoRef.current;
+      if (!info) return null;
+      const node = findNodeByPath(info.tree, filePath);
+      if (!node || node.type !== "blob") return null;
+      try {
+        const params = new URLSearchParams({
+          owner: info.owner,
+          repo: info.repo,
+          path: node.path,
+          ...(node.sha ? { sha: node.sha } : {}),
+        });
+        const res = await fetch(`/api/github/file?${params}`, {
+          headers: runtimeSettingsHeaders,
+        });
+        const data = await res.json() as { content?: string };
+        if (!res.ok || typeof data.content !== "string") return null;
+        return data.content;
+      } catch {
+        return null;
+      }
+    }
+
+    if (localMode === "client") {
+      const handle = localFileStore.getHandle();
+      if (!handle) return null;
+      try {
+        return await readLocalFile(handle, filePath);
+      } catch {
+        return null;
+      }
+    }
+
+    if (!localPath) return null;
+
+    try {
+      const params = new URLSearchParams({ root: localPath, file: filePath });
+      const res = await fetch(`/api/local/file?${params}`);
+      const data = await res.json() as { content?: string };
+      if (!res.ok || typeof data.content !== "string") return null;
+      return data.content;
+    } catch {
+      return null;
+    }
+  // repoInfoRef is a ref (stable), so it doesn't need to be in deps
+  }, [localMode, localPath, runtimeSettingsHeaders, source]);
 
   const fetchRepoFileContent = useCallback(async (
-    info: RepoInfo & { stars?: number },
+    info: AnalyzedProjectInfo,
     filePath: string,
   ): Promise<string | null> => {
     const node = findNodeByPath(info.tree, filePath);
@@ -337,14 +436,20 @@ function AnalyzeContent() {
       return null;
     }
 
+    if (info.source === "local") {
+      return fetchFileContent(filePath);
+    }
+
     try {
       const params = new URLSearchParams({
         owner: info.owner,
         repo: info.repo,
         path: node.path,
-        sha: node.sha,
+        ...(node.sha ? { sha: node.sha } : {}),
       });
-      const res = await fetch(`/api/github/file?${params}`);
+      const res = await fetch(`/api/github/file?${params}`, {
+        headers: runtimeSettingsHeaders,
+      });
       const data = await res.json() as { content?: string };
       if (!res.ok || !data.content) {
         return null;
@@ -353,11 +458,11 @@ function AnalyzeContent() {
     } catch {
       return null;
     }
-  }, []);
+  }, [fetchFileContent, runtimeSettingsHeaders]);
 
   const persistCallgraphArtifact = useCallback(async (
     graphResult: CallgraphResult,
-    info: RepoInfo & { stars?: number },
+    info: AnalyzedProjectInfo,
   ): Promise<string | null> => {
     try {
       const currentAnalysis = analysisResultRef.current;
@@ -365,8 +470,8 @@ function AnalyzeContent() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          repoName: info.fullName,
-          repoUrl: `https://github.com/${info.fullName}`,
+          repoName: getProjectName(info),
+          repoUrl: getProjectLocation(info),
           summary: currentAnalysis?.summary ?? null,
           description: info.description ?? currentAnalysis?.summary ?? null,
           locale: callgraphDescriptionLocaleRef.current,
@@ -385,15 +490,15 @@ function AnalyzeContent() {
       addLog(makeLogEntry("warning", "调用图工程文件保存失败：网络请求异常"));
       return null;
     }
-  }, [addLog]);
+  }, [addLog, getProjectLocation, getProjectName]);
 
   const runRecursiveAnalysis = useCallback(async (
     initialResult: CallgraphResult,
-    info: RepoInfo & { stars?: number },
+    info: AnalyzedProjectInfo,
     entryFileContent: string,
     descriptionLocale: AnalysisLocale,
   ) => {
-    const maxDepth = parseInt(process.env.NEXT_PUBLIC_CALLGRAPH_MAX_DEPTH ?? "2", 10);
+    const maxDepth = settings.maxDrillDepth;
     if (maxDepth < 2) return initialResult; // depth-1 is already done by the initial callgraph
 
     const allFilePaths = filterCodeFiles(info.tree);
@@ -405,18 +510,11 @@ function AnalyzeContent() {
 
     async function fetchContent(filePath: string): Promise<string | null> {
       if (contentCache.has(filePath)) return contentCache.get(filePath)!;
-      const node = findNodeByPath(info.tree, filePath);
-      if (!node || node.type !== "blob") return null;
-      try {
-        const params = new URLSearchParams({
-          owner: info.owner, repo: info.repo, path: node.path, sha: node.sha,
-        });
-        const res = await fetch(`/api/github/file?${params}`);
-        if (!res.ok) return null;
-        const data = await res.json() as { content: string };
-        contentCache.set(filePath, data.content);
-        return data.content;
-      } catch { return null; }
+      const content = await fetchFileContent(filePath);
+      if (content !== null) {
+        contentCache.set(filePath, content);
+      }
+      return content;
     }
 
     type QueueItem = {
@@ -472,7 +570,7 @@ function AnalyzeContent() {
       if (!snippet) {
         try {
           const locateRequest = {
-            repoName: info.fullName,
+            repoName: getProjectName(info),
             functionName: node.name,
             callerFile: parentFile,
             allFilePaths,
@@ -481,7 +579,7 @@ function AnalyzeContent() {
           const locRes = await fetch("/api/analyze/callgraph/locate", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(locateRequest),
+            body: JSON.stringify(attachRuntimeSettings(locateRequest)),
           });
           if (locRes.ok) {
             const locData = await locRes.json() as { suggestedFiles: string[] };
@@ -536,7 +634,7 @@ function AnalyzeContent() {
       // Expand: get sub-functions of this node
       try {
         const expandRequest = {
-          repoName: info.fullName,
+          repoName: getProjectName(info),
           functionName: node.name,
           filePath: foundFile,
           functionSnippet: snippet,
@@ -547,7 +645,7 @@ function AnalyzeContent() {
         const expandRes = await fetch("/api/analyze/callgraph/expand", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(expandRequest),
+          body: JSON.stringify(attachRuntimeSettings(expandRequest)),
         });
         if (expandRes.ok) {
           const expandData = await expandRes.json() as { children: CallgraphNode[] };
@@ -578,7 +676,7 @@ function AnalyzeContent() {
       setAnalyzingFunctions((prev) => { const s = new Set(prev); s.delete(node.name); return s; });
     }
     return localResult;
-  }, [addLog]);
+  }, [addLog, attachRuntimeSettings, fetchFileContent, getProjectName, settings.maxDrillDepth]);
 
   const handleManualDrilldown = useCallback(async (path: number[]) => {
     const info = repoInfo;
@@ -588,7 +686,16 @@ function AnalyzeContent() {
     }
 
     const targetNode = getNodeAtPath(graph, path);
-    if (!targetNode || targetNode.drillDown === -1 || (targetNode.children?.length ?? 0) > 0) {
+    if (!targetNode) {
+      return;
+    }
+
+    if (path.length >= settings.maxDrillDepth) {
+      addLog(makeLogEntry("info", `手动下钻已跳过：${targetNode.name} 已达到最大下钻层数 ${settings.maxDrillDepth}`));
+      return;
+    }
+
+    if (targetNode.drillDown === -1 || (targetNode.children?.length ?? 0) > 0) {
       return;
     }
 
@@ -624,7 +731,7 @@ function AnalyzeContent() {
 
       if (!functionSnippet) {
         const locateRequest = {
-          repoName: info.fullName,
+          repoName: getProjectName(info),
           functionName: targetNode.name,
           callerFile: parentNode?.likelyFile ?? graph.entryFile,
           allFilePaths,
@@ -634,7 +741,7 @@ function AnalyzeContent() {
         const locateRes = await fetch("/api/analyze/callgraph/locate", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(locateRequest),
+          body: JSON.stringify(attachRuntimeSettings(locateRequest)),
         });
         const locateData = await locateRes.json() as { error?: string; suggestedFiles?: string[] };
 
@@ -667,7 +774,7 @@ function AnalyzeContent() {
 
       if (!nextChildren) {
         const expandRequest = {
-          repoName: info.fullName,
+          repoName: getProjectName(info),
           functionName: targetNode.name,
           filePath: foundFile,
           functionSnippet,
@@ -679,7 +786,7 @@ function AnalyzeContent() {
         const expandRes = await fetch("/api/analyze/callgraph/expand", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(expandRequest),
+          body: JSON.stringify(attachRuntimeSettings(expandRequest)),
         });
         const expandData = await expandRes.json() as { error?: string; children?: CallgraphNode[] };
 
@@ -731,16 +838,19 @@ function AnalyzeContent() {
     }
   }, [
     addLog,
+    attachRuntimeSettings,
     fetchRepoFileContent,
+    getProjectName,
     isRestoredFromHistory,
     persistCallgraphArtifact,
     repoInfo,
+    settings.maxDrillDepth,
     triggerSave,
   ]);
 
   const runModuleAnalysis = useCallback(async (
     graphResult: CallgraphResult,
-    info: RepoInfo & { stars?: number },
+    info: AnalyzedProjectInfo,
   ) => {
     const currentAnalysis = analysisResultRef.current;
     if (!currentAnalysis) return null;
@@ -752,16 +862,16 @@ function AnalyzeContent() {
       const res = await fetch("/api/analyze/modules", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          repoName: info.fullName,
-          repoUrl: `https://github.com/${info.fullName}`,
+        body: JSON.stringify(attachRuntimeSettings({
+          repoName: getProjectName(info),
+          repoUrl: getProjectLocation(info),
           locale: analysisLocaleRef.current,
           summary: currentAnalysis.summary,
           description: info.description,
           languages: currentAnalysis.languages,
           techStack: currentAnalysis.techStack,
           functions: flattenCallgraphFunctions(graphResult),
-        }),
+        })),
       });
       const data = await res.json();
 
@@ -784,7 +894,7 @@ function AnalyzeContent() {
       addLog(makeLogEntry("warning", "模块划分：网络请求失败"));
       return null;
     }
-  }, [addLog]);
+  }, [addLog, attachRuntimeSettings, getProjectLocation, getProjectName]);
 
   useEffect(() => {
     runModuleAnalysisRef.current = runModuleAnalysis;
@@ -793,7 +903,7 @@ function AnalyzeContent() {
   const runCallgraphAnalysis = useCallback(async (
     confirmedPath: string,
     fileContent: string,
-    info: RepoInfo & { stars?: number },
+    info: AnalyzedProjectInfo,
     descriptionLocale: AnalysisLocale = callgraphDescriptionLocaleRef.current,
   ) => {
     const currentAnalysis = analysisResultRef.current;
@@ -810,7 +920,7 @@ function AnalyzeContent() {
 
     try {
       const callgraphRequest = {
-        repoName: info.fullName,
+        repoName: getProjectName(info),
         filePath: confirmedPath,
         fileContent,
         allFilePaths,
@@ -827,7 +937,7 @@ function AnalyzeContent() {
       const res = await fetch("/api/analyze/callgraph", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(callgraphRequest),
+        body: JSON.stringify(attachRuntimeSettings(callgraphRequest)),
       });
       const data = await res.json();
 
@@ -871,7 +981,7 @@ function AnalyzeContent() {
     } finally {
       setCallgraphLoading(false);
     }
-  }, [addLog, persistCallgraphArtifact, runModuleAnalysis, runRecursiveAnalysis, triggerSave]);
+  }, [addLog, attachRuntimeSettings, getProjectName, persistCallgraphArtifact, runModuleAnalysis, runRecursiveAnalysis, triggerSave]);
 
   const resolveConfirmedEntryContext = useCallback(async () => {
     if (confirmedEntryContextRef.current) {
@@ -893,21 +1003,14 @@ function AnalyzeContent() {
     }
 
     try {
-      const params = new URLSearchParams({
-        owner: repoInfo.owner,
-        repo: repoInfo.repo,
-        path: node.path,
-        sha: node.sha,
-      });
-      const res = await fetch(`/api/github/file?${params}`);
-      const data = await res.json() as { content?: string; error?: string };
-      if (!res.ok || !data.content) {
+      const fileContent = await fetchFileContent(confirmedPath);
+      if (!fileContent) {
         return null;
       }
 
       const context = {
         path: confirmedPath,
-        fileContent: data.content,
+        fileContent,
         info: repoInfo,
       };
       confirmedEntryContextRef.current = context;
@@ -915,7 +1018,7 @@ function AnalyzeContent() {
     } catch {
       return null;
     }
-  }, [repoInfo]);
+  }, [fetchFileContent, repoInfo]);
 
   const handleCallgraphDescriptionLocaleChange = useCallback(async (locale: AnalysisLocale) => {
     setCallgraphDescriptionLocale(locale);
@@ -936,7 +1039,7 @@ function AnalyzeContent() {
 
   const runEntryAnalysis = useCallback(async (
     entryFiles: AnalysisResult["entryFiles"],
-    info: RepoInfo & { stars?: number },
+    info: AnalyzedProjectInfo,
     languages: AnalysisResult["languages"],
   ) => {
     setWorkflowState({ state: "working", stage: "entry" });
@@ -954,19 +1057,12 @@ function AnalyzeContent() {
 
       let fileContent: string;
       try {
-        const params = new URLSearchParams({
-          owner: info.owner,
-          repo: info.repo,
-          path: node.path,
-          sha: node.sha,
-        });
-        const res = await fetch(`/api/github/file?${params}`);
-        const data = await res.json();
-        if (!res.ok) {
+        const content = await fetchFileContent(entry.path);
+        if (!content) {
           addLog(makeLogEntry("warning", `入口研判：${entry.path} 文件读取失败`));
           continue;
         }
-        fileContent = (data as { content: string }).content;
+        fileContent = content;
       } catch {
         addLog(makeLogEntry("warning", `入口研判：${entry.path} 网络错误`));
         continue;
@@ -988,15 +1084,15 @@ function AnalyzeContent() {
         const res = await fetch("/api/analyze/entry", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            repoUrl: `https://github.com/${info.fullName}`,
-            repoName: info.fullName,
+          body: JSON.stringify(attachRuntimeSettings({
+            repoUrl: getProjectLocation(info),
+            repoName: getProjectName(info),
             locale: analysisLocaleRef.current,
             description: info.description ?? null,
             languages: languages.map((l) => ({ name: l.name, percentage: l.percentage })),
             filePath: entry.path,
             fileContent: truncated,
-          }),
+          })),
         });
         const data = await res.json();
 
@@ -1028,9 +1124,9 @@ function AnalyzeContent() {
     if (!confirmedEntryFound) {
       setWorkflowState({ state: "completed", stage: "complete" });
     }
-  }, [addLog, runCallgraphAnalysis]);
+  }, [addLog, attachRuntimeSettings, fetchFileContent, getProjectLocation, getProjectName, runCallgraphAnalysis]);
 
-  const fetchAnalysis = useCallback(async (info: RepoInfo & { stars?: number }, locale: AnalysisLocale) => {
+  const fetchAnalysis = useCallback(async (info: AnalyzedProjectInfo, locale: AnalysisLocale) => {
     setWorkflowState({ state: "working", stage: "analysis" });
     const allPaths = filterCodeFiles(info.tree);
 
@@ -1045,7 +1141,7 @@ function AnalyzeContent() {
     }
 
     const requestPayload = {
-      repoName: info.fullName,
+      repoName: getProjectName(info),
       fileCount: allPaths.length,
       filePaths: allPaths,
     };
@@ -1064,8 +1160,8 @@ function AnalyzeContent() {
       const res = await fetch("/api/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          repoName: info.fullName,
+        body: JSON.stringify(attachRuntimeSettings({
+          repoName: getProjectName(info),
           filePaths: allPaths,
           locale,
           repoContext: {
@@ -1080,7 +1176,7 @@ function AnalyzeContent() {
             openIssues: info.openIssues,
             updatedAt: info.updatedAt,
           },
-        }),
+        })),
       });
       const data = await res.json();
 
@@ -1104,7 +1200,7 @@ function AnalyzeContent() {
       ));
 
       if (result.entryFiles.length > 0) {
-        runEntryAnalysis(result.entryFiles, info as RepoInfo & { stars?: number }, result.languages);
+        runEntryAnalysis(result.entryFiles, info, result.languages);
       } else {
         setWorkflowState({ state: "completed", stage: "complete" });
       }
@@ -1116,30 +1212,17 @@ function AnalyzeContent() {
     } finally {
       setAnalysisLoading(false);
     }
-  }, [addLog, runEntryAnalysis]);
+  }, [addLog, attachRuntimeSettings, getProjectName, runEntryAnalysis]);
 
-  const fetchTree = useCallback(async (url: string) => {
-    analyzeUrlRef.current = url;
-    setWorkflowState({ state: "working", stage: "tree" });
-    const parsed = parseGithubUrl(url);
-    if (!parsed) {
-      setInputError(text.invalidUrl);
-      setWorkflowState({ state: "error", stage: "error" });
-      addLog(makeLogEntry("error", `GitHub URL 校验失败：无效的地址格式 "${url}"`));
-      return;
-    }
-
-    addLog(makeLogEntry(
-      "success",
-      `GitHub URL 校验通过：${parsed.owner}/${parsed.repo}`
-    ));
-
+  const resetAnalysisSession = useCallback((initialLogs: LogEntry[] = []) => {
     setInputError("");
     setTreeLoading(true);
     setTreeError(null);
+    repoInfoRef.current = null;
     setRepoInfo(null);
     setSelectedPath(null);
     setFileContent(null);
+    setFileError(null);
     setAnalysisResult(null);
     setAnalysisError(null);
     setAnalysisCache({});
@@ -1155,10 +1238,31 @@ function AnalyzeContent() {
     drilldownCacheRef.current.clear();
     callgraphCacheRef.current = {};
     confirmedEntryContextRef.current = null;
-    setLogs([makeLogEntry("success", `GitHub URL 校验通过：${parsed.owner}/${parsed.repo}`)]);
+    setLogs(initialLogs);
+  }, []);
+
+  const fetchGithubTree = useCallback(async (url: string) => {
+    analyzeUrlRef.current = url;
+    setWorkflowState({ state: "working", stage: "tree" });
+    const parsed = parseGithubUrl(url);
+    if (!parsed) {
+      setInputError(text.invalidUrl);
+      setWorkflowState({ state: "error", stage: "error" });
+      addLog(makeLogEntry("error", `GitHub URL 校验失败：无效的地址格式 "${url}"`));
+      return;
+    }
+
+    addLog(makeLogEntry(
+      "success",
+      `GitHub URL 校验通过：${parsed.owner}/${parsed.repo}`
+    ));
+
+    resetAnalysisSession([makeLogEntry("success", `GitHub URL 校验通过：${parsed.owner}/${parsed.repo}`)]);
 
     try {
-      const res = await fetch(`/api/github/tree?url=${encodeURIComponent(url)}`);
+      const res = await fetch(`/api/github/tree?url=${encodeURIComponent(url)}`, {
+        headers: runtimeSettingsHeaders,
+      });
       const data = await res.json();
 
       if (!res.ok) {
@@ -1169,7 +1273,8 @@ function AnalyzeContent() {
         return;
       }
 
-      const info = data as RepoInfo & { stars?: number };
+      const info = data as AnalyzedProjectInfo;
+      repoInfoRef.current = info;
       setRepoInfo(info);
 
       const { files, dirs } = countFiles(info.tree);
@@ -1187,7 +1292,95 @@ function AnalyzeContent() {
     } finally {
       setTreeLoading(false);
     }
-  }, [addLog, fetchAnalysis, text.invalidUrl, text.networkRetry, text.repoLoadFailed]);
+  }, [addLog, fetchAnalysis, resetAnalysisSession, runtimeSettingsHeaders, text.invalidUrl, text.networkRetry, text.repoLoadFailed]);
+
+  const fetchLocalTree = useCallback(async (pathOverride?: string) => {
+    const resolvedPath = (pathOverride ?? localPath).trim();
+    const existingHandle = localMode === "client" ? localFileStore.getHandle() : null;
+    const displayName = localMode === "client"
+      ? (existingHandle?.name ?? localName) || "local-project"
+      : resolvedPath.split(/[\\/]/).filter(Boolean).pop() || resolvedPath || "local-project";
+
+    analyzeUrlRef.current = localMode === "client" ? `local:${displayName}` : resolvedPath;
+    setWorkflowState({ state: "working", stage: "tree" });
+
+    if (localMode === "server" && !resolvedPath) {
+      const message = "请输入本地项目路径";
+      setInputError(message);
+      setTreeError(message);
+      setWorkflowState({ state: "error", stage: "error" });
+      return;
+    }
+
+    resetAnalysisSession([makeLogEntry("success", `本地项目：${displayName}`)]);
+
+    try {
+      let info: AnalyzedProjectInfo;
+
+      if (localMode === "client") {
+        const handle = localFileStore.getHandle();
+        if (!handle) {
+          const message = "本地文件夹连接已断开，请返回首页重新选择文件夹。";
+          setTreeError(message);
+          setWorkflowState({ state: "error", stage: "error" });
+          addLog(makeLogEntry("error", message));
+          return;
+        }
+
+        const tree = await buildLocalTree(handle);
+        info = {
+          owner: "",
+          repo: handle.name,
+          branch: "",
+          fullName: `local:${handle.name}`,
+          description: null,
+          homepage: null,
+          primaryLanguage: null,
+          license: null,
+          topics: [],
+          forks: undefined,
+          openIssues: undefined,
+          updatedAt: null,
+          stars: undefined,
+          tree,
+          source: "local",
+          displayName: handle.name,
+          localPath: null,
+        };
+      } else {
+        const res = await fetch(`/api/local/tree?path=${encodeURIComponent(resolvedPath)}`);
+        const data = await res.json();
+
+        if (!res.ok) {
+          const msg = (data as { error?: string }).error || "无法读取本地目录";
+          setTreeError(msg);
+          setWorkflowState({ state: "error", stage: "error" });
+          addLog(makeLogEntry("error", `本地目录获取失败：${msg}`));
+          return;
+        }
+
+        info = {
+          ...(data as AnalyzedProjectInfo),
+          source: "local",
+          displayName: (data as { displayName?: string }).displayName ?? (data as { repo?: string }).repo,
+          localPath: (data as { localPath?: string }).localPath ?? resolvedPath,
+        };
+      }
+
+      repoInfoRef.current = info;
+      setRepoInfo(info);
+      const { files, dirs } = countFiles(info.tree);
+      addLog(makeLogEntry("success", `文件树加载完成：${files} 个文件，${dirs} 个目录`));
+      fetchAnalysis(info, analysisLocaleRef.current);
+    } catch {
+      const msg = "无法读取本地目录";
+      setTreeError(msg);
+      setWorkflowState({ state: "error", stage: "error" });
+      addLog(makeLogEntry("error", msg));
+    } finally {
+      setTreeLoading(false);
+    }
+  }, [addLog, fetchAnalysis, localMode, localName, localPath, resetAnalysisSession]);
 
   const restoreFromRecord = useCallback((record: AnalysisRecord) => {
     setInputUrl(record.url);
@@ -1210,7 +1403,11 @@ function AnalyzeContent() {
       openIssues: record.repoMeta.openIssues,
       updatedAt: record.repoMeta.updatedAt,
       tree: record.fileTree,
+      source: record.source ?? "github",
+      displayName: record.displayName,
+      localPath: record.source === "local" ? record.url : null,
     };
+    repoInfoRef.current = info;
     setRepoInfo(info);
     setTreeLoading(false);
     setTreeError(null);
@@ -1236,31 +1433,64 @@ function AnalyzeContent() {
   }, []);
 
   useEffect(() => {
+    if (!settingsHydrated) {
+      return;
+    }
+
     const url = searchParams.get("url");
     const historyId = searchParams.get("historyId");
     if (historyId) {
       const record = getRecordById(historyId);
       if (record) { restoreFromRecord(record); return; }
     }
+    if (source === "local") {
+      setInputUrl(localMode === "client" ? localName : localPath);
+      fetchLocalTree();
+      return;
+    }
     if (url) {
       setInputUrl(url);
-      fetchTree(url);
+      fetchGithubTree(url);
     }
-  }, [fetchTree, searchParams, restoreFromRecord]);
+  }, [fetchGithubTree, fetchLocalTree, localMode, localName, localPath, restoreFromRecord, searchParams, settingsHydrated, source]);
 
   const handleAnalyze = () => {
     const trimmed = inputUrl.trim();
+
+    if (source === "local") {
+      if (localMode === "server" && !trimmed) {
+        setInputError("请输入本地项目路径");
+        return;
+      }
+
+      setIsRestoredFromHistory(false);
+      setCurrentRecordId(null);
+
+      if (localMode === "client") {
+        const nextName = trimmed || localName || repoInfo?.displayName || "local-project";
+        router.replace(`/analyze?source=local&mode=client&name=${encodeURIComponent(nextName)}`);
+        setInputUrl(nextName);
+        fetchLocalTree();
+        return;
+      }
+
+      router.replace(`/analyze?source=local&path=${encodeURIComponent(trimmed)}`);
+      fetchLocalTree(trimmed);
+      return;
+    }
+
     if (!trimmed) {
       setInputError(text.emptyUrl);
       return;
     }
+
     setIsRestoredFromHistory(false);
     setCurrentRecordId(null);
     router.replace(`/analyze?url=${encodeURIComponent(trimmed)}`);
-    fetchTree(trimmed);
+    fetchGithubTree(trimmed);
   };
 
-  const handleFileClick = async (node: TreeNode) => {
+  const handleFileClick = useCallback(async (node: TreeNode) => {
     if (!repoInfo) return;
     setSelectedPath(node.path);
     setFileContent(null);
@@ -1268,35 +1498,28 @@ function AnalyzeContent() {
     setFileLoading(true);
 
     try {
-      const params = new URLSearchParams({
-        owner: repoInfo.owner,
-        repo: repoInfo.repo,
-        path: node.path,
-        sha: node.sha,
-      });
-      const res = await fetch(`/api/github/file?${params}`);
-      const data = await res.json();
-      if (!res.ok) {
-        setFileError((data as { error?: string }).error || text.fileLoadFailed);
+      const content = await fetchFileContent(node.path);
+      if (!content) {
+        setFileError(text.fileLoadFailed);
         return;
       }
-      setFileContent((data as { content: string }).content);
+      setFileContent(content);
     } catch {
       setFileError(text.fileContentLoadFailed);
     } finally {
       setFileLoading(false);
     }
-  };
+  }, [fetchFileContent, repoInfo, text.fileContentLoadFailed, text.fileLoadFailed]);
 
-  const handleEntryFileClick = (path: string) => {
+  const handleEntryFileClick = useCallback((path: string) => {
     if (!repoInfo) return;
     const node = findNodeByPath(repoInfo.tree, path);
     if (node && node.type === "blob") {
       handleFileClick(node);
     }
-  };
+  }, [handleFileClick, repoInfo]);
 
-  const handleAnalysisLocaleChange = (locale: AnalysisLocale) => {
+  const handleAnalysisLocaleChange = useCallback((locale: AnalysisLocale) => {
     setAnalysisLocale(locale);
 
     if (analysisCache[locale]) {
@@ -1309,10 +1532,28 @@ function AnalyzeContent() {
     if (repoInfo) {
       fetchAnalysis(repoInfo, locale);
     }
-  };
+  }, [analysisCache, fetchAnalysis, repoInfo]);
 
   return (
     <div className="h-screen flex flex-col overflow-hidden" style={{ background: "var(--bg)" }}>
+      {mounted && source === "local" && localMode === "client" && !localFileStore.getHandle() && !repoInfo && !treeLoading && (
+        <div
+          className="absolute inset-0 z-50 flex flex-col items-center justify-center gap-4"
+          style={{ background: "var(--bg)" }}
+        >
+          <p className="text-base" style={{ color: "var(--text)" }}>
+            本地文件夹连接已断开。请返回首页重新选择文件夹。
+          </p>
+          <button
+            onClick={() => router.push("/")}
+            className="px-4 py-2 rounded-lg text-sm font-semibold"
+            style={{ background: "var(--accent)", color: "var(--accent-contrast)" }}
+          >
+            返回首页
+          </button>
+        </div>
+      )}
+
       {/* Top bar */}
       <header
         className="flex items-center gap-3 px-4 py-2.5 border-b shrink-0"
@@ -1331,10 +1572,24 @@ function AnalyzeContent() {
         {repoInfo && (
           <>
             <span style={{ color: "var(--border)" }}>/</span>
-            <span className="text-sm font-medium" style={{ color: "var(--text)" }}>
-              {repoInfo.fullName}
+            <span className="text-sm font-medium truncate max-w-[24rem]" style={{ color: "var(--text)" }}>
+              {getProjectName(repoInfo)}
             </span>
-            {repoInfo.stars !== undefined && (
+            {repoInfo.source === "local" && (
+              <span
+                className="flex items-center gap-1 text-xs px-2 py-0.5 rounded-full border shrink-0"
+                style={{ color: "var(--muted)", borderColor: "var(--border)" }}
+              >
+                <FolderOpen size={11} />
+                本地项目
+              </span>
+            )}
+            {repoInfo.source === "local" && repoInfo.localPath && (
+              <span className="text-xs truncate max-w-[24rem]" style={{ color: "var(--muted)" }}>
+                {repoInfo.localPath}
+              </span>
+            )}
+            {repoInfo.source !== "local" && repoInfo.stars !== undefined && (
               <span
                 className="flex items-center gap-1 text-xs px-2 py-0.5 rounded-full border"
                 style={{ color: "var(--muted)", borderColor: "var(--border)" }}
@@ -1343,26 +1598,28 @@ function AnalyzeContent() {
                 {repoInfo.stars.toLocaleString()}
               </span>
             )}
-            <span
-              className="flex items-center gap-1 text-xs px-2 py-0.5 rounded-full border"
-              style={{ color: "var(--muted)", borderColor: "var(--border)" }}
-            >
-              <GitBranch size={11} />
-              {repoInfo.branch}
-            </span>
+            {repoInfo.source !== "local" && repoInfo.branch && (
+              <span
+                className="flex items-center gap-1 text-xs px-2 py-0.5 rounded-full border"
+                style={{ color: "var(--muted)", borderColor: "var(--border)" }}
+              >
+                <GitBranch size={11} />
+                {repoInfo.branch}
+              </span>
+            )}
             {isRestoredFromHistory && (
               <button
                 onClick={() => {
                   setIsRestoredFromHistory(false);
                   setCurrentRecordId(null);
-                  fetchTree(inputUrl);
+                  handleAnalyze();
                 }}
                 className="flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full border transition-colors"
                 style={{ color: "var(--accent)", borderColor: "var(--accent)" }}
-                title="Re-analyze this repository"
+                title={repoInfo.source === "local" ? "重新分析当前本地项目" : "Re-analyze this repository"}
               >
                 <RefreshCcw size={11} />
-                Re-analyze
+                {repoInfo.source === "local" ? "重新分析" : "Re-analyze"}
               </button>
             )}
             {currentRecordId !== null && (
@@ -1371,7 +1628,7 @@ function AnalyzeContent() {
                   const record = getRecordById(currentRecordId);
                   if (!record) return;
                   const md = buildMarkdown(record);
-                  downloadMarkdown(`panocode-${repoInfo.fullName.replace("/", "-")}.md`, md);
+                  downloadMarkdown(`panocode-${getProjectName(repoInfo).replace(/[\\/]/g, "-")}.md`, md);
                 }}
                 className="flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full border transition-colors"
                 style={{ color: "var(--muted)", borderColor: "var(--border)" }}
@@ -1401,7 +1658,9 @@ function AnalyzeContent() {
                 borderColor: inputError ? "var(--error)" : "var(--border)",
               }}
             >
-              <Github size={14} style={{ color: "var(--muted)", flexShrink: 0 }} />
+                {source === "local"
+                  ? <FolderOpen size={14} style={{ color: "var(--muted)", flexShrink: 0 }} />
+                  : <Github size={14} style={{ color: "var(--muted)", flexShrink: 0 }} />}
               <input
                 type="text"
                 value={inputUrl}
@@ -1410,9 +1669,12 @@ function AnalyzeContent() {
                   if (inputError) setInputError("");
                 }}
                 onKeyDown={(e) => e.key === "Enter" && handleAnalyze()}
-                placeholder="github.com/owner/repo"
+                  placeholder={source === "local"
+                    ? (localMode === "client" ? "已选择本地文件夹" : "C:/path/to/project")
+                    : "github.com/owner/repo"}
                 className="flex-1 bg-transparent outline-none min-w-0"
                 style={{ color: "var(--text)", fontSize: "12px" }}
+                  readOnly={source === "local" && localMode === "client"}
               />
               <button
                 onClick={handleAnalyze}
@@ -1427,6 +1689,11 @@ function AnalyzeContent() {
               <p className="mt-1.5 text-xs flex items-center gap-1" style={{ color: "var(--error)" }}>
                 <AlertCircle size={11} />
                 {inputError}
+              </p>
+            )}
+            {source === "local" && localMode === "client" && inputUrl && (
+              <p className="mt-1.5 text-xs" style={{ color: "var(--muted)" }}>
+                当前通过浏览器本地文件夹句柄读取项目代码。
               </p>
             )}
           </div>
@@ -1501,8 +1768,8 @@ function AnalyzeContent() {
             )}
             {!treeLoading && !treeError && !repoInfo && (
               <div className="flex flex-col items-center gap-2 py-12 px-4 text-center" style={{ color: "var(--muted)" }}>
-                <Github size={24} />
-                <p className="text-xs">{text.emptyRepo}</p>
+                {source === "local" ? <FolderOpen size={24} /> : <Github size={24} />}
+                <p className="text-xs">{source === "local" ? "选择本地项目后开始分析" : text.emptyRepo}</p>
               </div>
             )}
             {repoInfo && !treeLoading && (
@@ -1562,7 +1829,8 @@ function AnalyzeContent() {
             onManualDrilldown={handleManualDrilldown}
             analyzingFunctions={analyzingFunctions}
             manualDrilldownPaths={manualDrilldownPaths}
-            repoName={repoInfo?.fullName}
+            repoName={repoInfo ? getProjectName(repoInfo) : undefined}
+            maxDrillDepth={settings.maxDrillDepth}
           />
         </div>
       </div>

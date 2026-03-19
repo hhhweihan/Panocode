@@ -58,7 +58,10 @@ Additional optional values:
 GITHUB_TOKEN="your-github-token"
 GITHUB_USE_MODELS="true"
 NEXT_PUBLIC_CALLGRAPH_MAX_DEPTH="2"
+NEXT_PUBLIC_CALLGRAPH_KEY_CHILDREN_LIMIT="10"
 ```
+
+The app also provides a settings dialog in the top-right corner. Those settings are persisted in browser storage. If both browser storage and environment variables are present, the environment variables win at startup and are shown in the settings dialog as the effective values.
 
 ## Analysis Workflow
 

@@ -4,8 +4,10 @@ import {
   ChatCompletionsResponseSchema,
   extractText,
   formatProviderError,
+  parseJsonObject,
   requestChatCompletionsWithFallback,
 } from "@/lib/llm";
+import { resolveRuntimeSettings } from "@/lib/runtimeSettings";
 
 const AnalysisLocaleSchema = z.enum(["zh", "en"]);
 
@@ -26,10 +28,15 @@ export async function POST(req: NextRequest) {
     filePath: string;
     fileContent: string;
     locale?: "zh" | "en";
+    settings?: unknown;
   };
 
   const { repoUrl, repoName, description, languages, filePath, fileContent } = body;
   const locale = AnalysisLocaleSchema.catch("zh").parse(body.locale);
+  const { settings } = resolveRuntimeSettings({
+    bodySettings: body.settings,
+    headerSettings: req.headers.get("x-panocode-runtime-settings"),
+  });
 
   const langSummary = languages
     .slice(0, 5)
@@ -40,10 +47,10 @@ export async function POST(req: NextRequest) {
     ? "Write reason in Simplified Chinese. Keep code identifiers, framework names, and technical proper nouns in their original form when appropriate."
     : "Write reason in English.";
 
-  const prompt = `You are analyzing a GitHub repository to determine if a specific file is the project's main entry point.
+  const prompt = `You are analyzing a software project to determine if a specific file is the project's main entry point.
 
-Repository: ${repoName}
-URL: ${repoUrl}
+Project: ${repoName}
+Location: ${repoUrl}
 Description: ${description ?? "N/A"}
 Primary Languages: ${langSummary}
 
@@ -91,6 +98,7 @@ Language requirement:
         ],
       },
       preferGithubModels: process.env.GITHUB_USE_MODELS === "true",
+      settings,
     });
 
     const parsedRaw = ChatCompletionsResponseSchema.parse(raw ?? {});
@@ -103,7 +111,7 @@ Language requirement:
     const text = extractText(parsedRaw.choices?.[0]?.message.content);
     if (!text) return NextResponse.json({ error: "Empty AI response" }, { status: 500 });
 
-    const result = EntryResultSchema.parse(JSON.parse(text));
+    const result = EntryResultSchema.parse(parseJsonObject(text));
     return NextResponse.json(result);
   } catch (err) {
     if (err instanceof z.ZodError) {

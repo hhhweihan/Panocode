@@ -1,5 +1,6 @@
 "use client";
 
+import { memo } from "react";
 import { Loader2, AlertCircle, Sparkles, FileCode, CheckCircle2, XCircle } from "lucide-react";
 import type { AnalysisResult } from "@/app/api/analyze/route";
 import type { EntryCheckResult } from "@/app/api/analyze/entry/route";
@@ -114,7 +115,7 @@ const PANEL_TEXT = {
   },
 } as const;
 
-export default function AnalysisPanel({
+function AnalysisPanel({
   loading,
   error,
   result,
@@ -522,3 +523,5 @@ export default function AnalysisPanel({
     </div>
   );
 }
+
+export default memo(AnalysisPanel);

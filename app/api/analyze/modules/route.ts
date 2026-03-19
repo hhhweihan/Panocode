@@ -6,8 +6,10 @@ import {
   ChatCompletionsResponseSchema,
   extractText,
   formatProviderError,
+  parseJsonObject,
   requestChatCompletionsWithFallback,
 } from "@/lib/llm";
+import { resolveRuntimeSettings } from "@/lib/runtimeSettings";
 import {
   MODULE_COLOR_PALETTE,
   type FunctionModule,
@@ -93,6 +95,7 @@ export async function POST(req: NextRequest) {
     locale?: "zh" | "en";
     summary?: string | null;
     description?: string | null;
+    settings?: unknown;
     languages: { name: string; percentage: number }[];
     techStack: { name: string; category: string }[];
     functions: {
@@ -108,6 +111,10 @@ export async function POST(req: NextRequest) {
   const { repoName, repoUrl, summary, description, languages, techStack, functions } = body;
   const locale = body.locale ?? "zh";
   const functionNames = functions.map((item) => item.name);
+  const { settings } = resolveRuntimeSettings({
+    bodySettings: body.settings,
+    headerSettings: req.headers.get("x-panocode-runtime-settings"),
+  });
 
   const languageInstruction = locale === "zh"
     ? "Write module names and descriptions in Simplified Chinese when appropriate."
@@ -115,8 +122,8 @@ export async function POST(req: NextRequest) {
 
   const prompt = `You are analyzing a software project's full function call panorama and need to group all analyzed functions into high-level functional modules.
 
-Repository: ${repoName}
-URL: ${repoUrl}
+Project: ${repoName}
+Location: ${repoUrl}
 Project description: ${description ?? "N/A"}
 Project summary: ${summary ?? "N/A"}
 Languages: ${languages.map((item) => `${item.name} (${item.percentage}%)`).join(", ")}
@@ -158,6 +165,7 @@ Return JSON only. Exact shape:
           { role: "user", content: prompt },
         ],
       },
+      settings,
     });
 
     const parsedRaw = ChatCompletionsResponseSchema.parse(raw ?? {});
@@ -170,7 +178,7 @@ Return JSON only. Exact shape:
     const text = extractText(parsedRaw.choices?.[0]?.message.content);
     if (!text) return NextResponse.json({ error: "Empty AI response" }, { status: 500 });
 
-    const parsed = ModuleResponseSchema.parse(JSON.parse(text));
+    const parsed = ModuleResponseSchema.parse(parseJsonObject(text));
     const modules = normalizeModules(parsed.modules, functionNames);
     const result: ModuleAnalysisResult = {
       modules,

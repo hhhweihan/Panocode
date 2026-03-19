@@ -1,51 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { buildTree, parseGithubUrl } from "@/lib/github";
-
-function getGithubHeaders() {
-  const headers: Record<string, string> = {
-    Accept: "application/vnd.github.v3+json",
-    "User-Agent": "Panocode/1.0",
-    "X-GitHub-Api-Version": "2022-11-28",
-  };
-
-  if (process.env.GITHUB_TOKEN) {
-    headers.Authorization = `Bearer ${process.env.GITHUB_TOKEN}`;
-  }
-
-  return headers;
-}
-
-function getGithub403Message(response: Response) {
-  const remaining = response.headers.get("x-ratelimit-remaining");
-  const limit = response.headers.get("x-ratelimit-limit");
-  const reset = response.headers.get("x-ratelimit-reset");
-  const resource = response.headers.get("x-ratelimit-resource");
-
-  const details: string[] = [];
-
-  if (remaining !== null) {
-    details.push(`remaining: ${remaining}`);
-  }
-
-  if (limit !== null) {
-    details.push(`limit: ${limit}`);
-  }
-
-  if (reset) {
-    const resetDate = new Date(Number(reset) * 1000);
-    if (!Number.isNaN(resetDate.getTime())) {
-      details.push(`reset: ${resetDate.toLocaleString("zh-CN", { hour12: false })}`);
-    }
-  }
-
-  const detailText = details.length > 0 ? ` (${details.join(", ")})` : "";
-
-  if (remaining === "0") {
-    return `GitHub API rate limit exceeded${resource ? ` (${resource})` : ""}${detailText}`;
-  }
-
-  return `Access denied by GitHub API${detailText}`;
-}
+import { GithubDataSource, GithubDataSourceError } from "@/lib/datasource/github";
+import { RUNTIME_SETTINGS_HEADER, resolveRuntimeSettings } from "@/lib/runtimeSettings";
 
 export async function GET(req: NextRequest) {
   const url = req.nextUrl.searchParams.get("url");
@@ -53,62 +8,35 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "Missing url parameter" }, { status: 400 });
   }
 
-  const parsed = parseGithubUrl(url);
-  if (!parsed) {
-    return NextResponse.json({ error: "Invalid GitHub URL format" }, { status: 400 });
-  }
-
-  const { owner, repo } = parsed;
-  const headers = getGithubHeaders();
-
   try {
-    const repoRes = await fetch(`https://api.github.com/repos/${owner}/${repo}`, { headers });
-
-    if (!repoRes.ok) {
-      if (repoRes.status === 404) {
-        return NextResponse.json({ error: "Repository not found" }, { status: 404 });
-      }
-      if (repoRes.status === 403) {
-        return NextResponse.json({ error: getGithub403Message(repoRes) }, { status: 403 });
-      }
-      return NextResponse.json({ error: "Failed to fetch repository info" }, { status: repoRes.status });
-    }
-
-    const repoData = await repoRes.json();
-    const branch: string = repoData.default_branch;
-
-    const treeRes = await fetch(
-      `https://api.github.com/repos/${owner}/${repo}/git/trees/${branch}?recursive=1`,
-      { headers }
-    );
-
-    if (!treeRes.ok) {
-      if (treeRes.status === 403) {
-        return NextResponse.json({ error: getGithub403Message(treeRes) }, { status: 403 });
-      }
-      return NextResponse.json({ error: "Failed to fetch file tree" }, { status: treeRes.status });
-    }
-
-    const treeData = await treeRes.json();
-    const tree = buildTree(treeData.tree ?? []);
+    const { settings } = resolveRuntimeSettings({
+      headerSettings: req.headers.get(RUNTIME_SETTINGS_HEADER),
+    });
+    const datasource = GithubDataSource.fromUrl(url, settings.githubToken);
+    const { info, tree } = await datasource.getTree();
 
     return NextResponse.json({
-      owner,
-      repo,
-      branch,
-      fullName: repoData.full_name as string,
-      description: repoData.description as string | null,
-      homepage: (repoData.homepage as string | null) || null,
-      primaryLanguage: (repoData.language as string | null) || null,
-      license: (repoData.license?.spdx_id as string | null) || (repoData.license?.name as string | null) || null,
-      topics: Array.isArray(repoData.topics) ? (repoData.topics as string[]) : [],
-      stars: repoData.stargazers_count as number,
-      forks: repoData.forks_count as number,
-      openIssues: repoData.open_issues_count as number,
-      updatedAt: repoData.updated_at as string | null,
+      source: "github",
+      owner: info.owner,
+      repo: info.repo,
+      branch: info.branch,
+      fullName: info.fullName,
+      description: info.description ?? null,
+      homepage: info.homepage ?? null,
+      primaryLanguage: info.primaryLanguage ?? null,
+      license: info.license ?? null,
+      topics: info.topics ?? [],
+      stars: info.stars,
+      forks: info.forks,
+      openIssues: info.openIssues,
+      updatedAt: info.updatedAt ?? null,
       tree,
     });
-  } catch {
+  } catch (error) {
+    if (error instanceof GithubDataSourceError) {
+      return NextResponse.json({ error: error.message }, { status: error.status });
+    }
+
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }

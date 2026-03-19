@@ -51,7 +51,7 @@ const CallgraphResultSchema = z.object({
 
 const SaveCallgraphSchema = z.object({
   repoName: z.string().min(1),
-  repoUrl: z.string().url(),
+  repoUrl: z.string().min(1),
   summary: z.string().nullable().optional(),
   description: z.string().nullable().optional(),
   locale: z.enum(["zh", "en"]).optional(),

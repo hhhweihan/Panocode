@@ -1,7 +1,7 @@
 "use client";
 
-import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ChevronDown, ChevronUp, Download, FileJson, Image, Loader2, Minus, Network, Plus, RefreshCcw, Sparkles, ZoomIn, ZoomOut } from "lucide-react";
+import { memo, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ChevronDown, ChevronUp, Download, FileJson, Image as ImageIcon, Loader2, Minus, Network, Plus, RefreshCcw, Sparkles, ZoomIn, ZoomOut } from "lucide-react";
 import type { CallgraphResult, CallgraphNode } from "@/app/api/analyze/callgraph/route";
 import type { AnalysisLocale } from "@/components/AnalysisPanel";
 import { serializeCallgraphPath } from "@/lib/callgraphUtils";
@@ -284,8 +284,8 @@ function collectCollapsiblePaths(result: CallgraphResult): string[] {
   return keys;
 }
 
-function shouldShowContinueDrilldown(node: CallgraphNode): boolean {
-  return !hasChildren(node) && node.drillDown !== -1;
+function shouldShowContinueDrilldown(node: CallgraphNode, path: number[], maxDrillDepth: number): boolean {
+  return !hasChildren(node) && node.drillDown !== -1 && path.length < maxDrillDepth;
 }
 
 // ── SVG Connectors ────────────────────────────────────────────────────────────
@@ -606,9 +606,10 @@ interface PanoramaPanelProps {
   analyzingFunctions?: Set<string>;
   manualDrilldownPaths?: Set<string>;
   repoName?: string;
+  maxDrillDepth: number;
 }
 
-export default function PanoramaPanel({
+function PanoramaPanel({
   loading,
   result,
   moduleAnalysis,
@@ -621,6 +622,7 @@ export default function PanoramaPanel({
   analyzingFunctions,
   manualDrilldownPaths,
   repoName,
+  maxDrillDepth,
 }: PanoramaPanelProps) {
   const t = TEXT[locale];
   const containerRef = useRef<HTMLDivElement>(null);
@@ -1059,7 +1061,7 @@ export default function PanoramaPanel({
               >
                 {downloading === "png"
                   ? <Loader2 size={11} className="animate-spin" style={{ color: "var(--accent)" }} />
-                  : <Image size={11} style={{ color: "var(--muted)" }} />
+                  : <ImageIcon size={11} style={{ color: "var(--muted)" }} />
                 }
               </button>
               <button
@@ -1187,7 +1189,7 @@ export default function PanoramaPanel({
                       />
                     </div>
 
-                    {!nodeHasChildren && shouldShowContinueDrilldown(ln.node) && renderDrilldownAnchor(
+                    {!nodeHasChildren && shouldShowContinueDrilldown(ln.node, ln.path, maxDrillDepth) && renderDrilldownAnchor(
                       ln.x + CARD_W,
                       ln.y + CARD_H / 2,
                       isManualLoading,
@@ -1220,3 +1222,5 @@ export default function PanoramaPanel({
     </div>
   );
 }
+
+export default memo(PanoramaPanel);
