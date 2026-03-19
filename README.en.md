@@ -28,17 +28,21 @@ Panocode is an AI-powered tool for codebase understanding and demonstration. It 
 
 ## Preview
 
-- Home page screenshot highlighting product positioning, dual entry options, and value proposition
-- Analysis workspace screenshot showing the file tree, source code, repository insights, and call panorama
-- A public demo URL can be added here later if one becomes available
+### Home Hero
 
-Current placeholders:
+![Panocode home hero](public/screenshots/home-hero.png)
 
-```text
-[TODO] Home page screenshot
-[TODO] Analysis page screenshot
-[TODO] Public demo URL
-```
+Highlights the product positioning, dual entry modes, and the core value proposition at a glance.
+
+### Analysis Workspace
+
+![Panocode analysis workspace](public/screenshots/analysis-workspace.png)
+
+Shows the integrated workflow across file tree browsing, source inspection, repository insights, logs, and call panorama.
+
+### Public Demo
+
+A public demo URL can be added here later if one becomes available.
 
 ## Workflow
 
@@ -123,7 +127,7 @@ npm run dev
 
 Default URL:
 
-- http://localhost:3000
+- <http://localhost:3000>
 
 ### Production Build
 
@@ -143,7 +147,7 @@ npm run lint
 ### Analyze a GitHub Repository
 
 1. Choose GitHub analysis on the home page
-2. Enter a repository URL, for example https://github.com/microsoft/vscode
+2. Enter a repository URL, for example <https://github.com/microsoft/vscode>
 3. Click Analyze
 4. Wait for the file tree, project analysis, entry verification, and call graph generation to finish
 
