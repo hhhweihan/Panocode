@@ -47,15 +47,18 @@ const DRILL_LABEL = {
 
 const TEXT = {
   zh: {
-    title:   "全景图",
-    loading: "分析调用图…",
-    empty:   "入口确认后自动分析",
-    reset:   "重置视图",
+    title:   "调用全景 · Panorama",
+    loading: "正在生成调用全景图…",
+    empty:   "入口确认后，会自动生成调用全景图",
+    reset:   "重置视角",
     zoomIn:  "放大",
     zoomOut: "缩小",
     noFile:  "—",
     endpoint: "URL",
-    descriptionLanguage: "函数介绍",
+    descriptionLanguage: "说明语言",
+    viewMode: "阅读模式",
+    panoramaMode: "全景",
+    mainlineMode: "主线",
     localeZh: "中文",
     localeEn: "English",
     expandAll: "全部展开",
@@ -65,21 +68,24 @@ const TEXT = {
     continueDrilldown: "继续下钻",
     childrenCount: "子节点",
     rootChildrenCount: "首层节点",
-    downloadPng: "下载 PNG",
-    downloadSvg: "下载 SVG",
-    downloadJson: "下载 JSON",
-    downloading: "生成中…",
+    downloadPng: "导出 PNG",
+    downloadSvg: "导出 SVG",
+    downloadJson: "导出 JSON",
+    downloading: "导出中…",
   },
   en: {
-    title:   "Panorama",
-    loading: "Analyzing call graph…",
-    empty:   "Auto-runs after entry confirmed",
+    title:   "Panorama · Call Graph",
+    loading: "Building the call graph…",
+    empty:   "The call graph appears automatically after entry confirmation",
     reset:   "Reset view",
     zoomIn:  "Zoom in",
     zoomOut: "Zoom out",
     noFile:  "—",
     endpoint: "URL",
-    descriptionLanguage: "Descriptions",
+    descriptionLanguage: "Description Language",
+    viewMode: "View",
+    panoramaMode: "Panorama",
+    mainlineMode: "Mainline",
     localeZh: "中文",
     localeEn: "English",
     expandAll: "Expand all",
@@ -89,10 +95,10 @@ const TEXT = {
     continueDrilldown: "Continue drilling",
     childrenCount: "children",
     rootChildrenCount: "top-level nodes",
-    downloadPng: "Download PNG",
-    downloadSvg: "Download SVG",
-    downloadJson: "Download JSON",
-    downloading: "Generating…",
+    downloadPng: "Export PNG",
+    downloadSvg: "Export SVG",
+    downloadJson: "Export JSON",
+    downloading: "Exporting…",
   },
 } as const;
 
@@ -255,6 +261,31 @@ function countDescendants(node: CallgraphNode): number {
   return children.reduce((sum, child) => sum + 1 + countDescendants(child), 0);
 }
 
+function filterChildrenToMainline(children: CallgraphNode[]): CallgraphNode[] {
+  return children
+    .map((child) => {
+      const filteredChildren = child.children ? filterChildrenToMainline(child.children) : [];
+      const shouldKeep = child.drillDown === 1 || filteredChildren.length > 0;
+
+      if (!shouldKeep) {
+        return null;
+      }
+
+      return {
+        ...child,
+        children: filteredChildren.length > 0 ? filteredChildren : child.children,
+      };
+    })
+    .filter((child): child is CallgraphNode => child !== null);
+}
+
+function filterResultToMainline(result: CallgraphResult): CallgraphResult {
+  return {
+    ...result,
+    children: filterChildrenToMainline(result.children),
+  };
+}
+
 function countHiddenNodes(node: CallgraphNode, isNodeCollapsed: boolean): number {
   if (isNodeCollapsed) {
     return countDescendants(node);
@@ -340,6 +371,7 @@ function RootCard({
   name,
   file,
   onClick,
+  onFocus,
   moduleColor,
   isDimmed,
   isHighlighted,
@@ -347,6 +379,7 @@ function RootCard({
   name: string;
   file: string;
   onClick: () => void;
+  onFocus?: (() => void) | null;
   moduleColor?: string | null;
   isDimmed: boolean;
   isHighlighted: boolean;
@@ -354,7 +387,10 @@ function RootCard({
   const filename = file.split("/").pop() ?? file;
   return (
     <div
-      onClick={onClick}
+      onClick={() => {
+        onFocus?.();
+        onClick();
+      }}
       style={{
         position: "absolute",
         width: ROOT_W,
@@ -423,13 +459,14 @@ interface ChildCardProps {
   node: CallgraphNode;
   locale: AnalysisLocale;
   onFileClick: (path: string) => void;
+  onFocusNode?: (functionName: string, filePath: string | null) => void;
   isAnalyzing: boolean;
   moduleColor?: string | null;
   isDimmed: boolean;
   isHighlighted: boolean;
 }
 
-function ChildCard({ node, locale, onFileClick, isAnalyzing, moduleColor, isDimmed, isHighlighted }: ChildCardProps) {
+function ChildCard({ node, locale, onFileClick, onFocusNode, isAnalyzing, moduleColor, isDimmed, isHighlighted }: ChildCardProps) {
   const s = DRILL_STYLE[node.drillDown] ?? DRILL_STYLE[0];
   const label = DRILL_LABEL[locale][node.drillDown as -1 | 0 | 1];
   const filename = node.likelyFile
@@ -440,7 +477,12 @@ function ChildCard({ node, locale, onFileClick, isAnalyzing, moduleColor, isDimm
 
   return (
     <div
-      onClick={() => node.likelyFile && onFileClick(node.likelyFile)}
+      onClick={() => {
+        onFocusNode?.(node.name, node.likelyFile ?? null);
+        if (node.likelyFile) {
+          onFileClick(node.likelyFile);
+        }
+      }}
       title={[node.likelyFile, routePath].filter(Boolean).join("\n") || undefined}
       style={{
         position: "absolute",
@@ -602,6 +644,7 @@ interface PanoramaPanelProps {
   descriptionLocale: AnalysisLocale;
   onDescriptionLocaleChange: (locale: AnalysisLocale) => void;
   onFileClick: (path: string) => void;
+  onFocusNode?: (functionName: string, filePath: string | null) => void;
   onManualDrilldown: (path: number[]) => void;
   analyzingFunctions?: Set<string>;
   manualDrilldownPaths?: Set<string>;
@@ -618,6 +661,7 @@ function PanoramaPanel({
   descriptionLocale,
   onDescriptionLocaleChange,
   onFileClick,
+  onFocusNode,
   onManualDrilldown,
   analyzingFunctions,
   manualDrilldownPaths,
@@ -626,9 +670,14 @@ function PanoramaPanel({
 }: PanoramaPanelProps) {
   const t = TEXT[locale];
   const containerRef = useRef<HTMLDivElement>(null);
-  const resultNodeCount = result ? countCallgraphNodes(result) : 0;
-  const resultKey = result
-    ? `${result.entryFile}::${result.rootFunction}::${resultNodeCount}`
+  const [viewMode, setViewMode] = useState<"panorama" | "mainline">("panorama");
+  const visibleResult = useMemo(
+    () => (result && viewMode === "mainline" ? filterResultToMainline(result) : result),
+    [result, viewMode],
+  );
+  const resultNodeCount = visibleResult ? countCallgraphNodes(visibleResult) : 0;
+  const resultKey = visibleResult
+    ? `${viewMode}::${visibleResult.entryFile}::${visibleResult.rootFunction}::${resultNodeCount}`
     : "empty";
 
   const [tx, setTx] = useState(20);
@@ -648,8 +697,8 @@ function PanoramaPanel({
   );
 
   const collapsiblePaths = useMemo(
-    () => (result ? collectCollapsiblePaths(result) : []),
-    [result],
+    () => (visibleResult ? collectCollapsiblePaths(visibleResult) : []),
+    [visibleResult],
   );
 
   const [downloading, setDownloading] = useState<"png" | "svg" | null>(null);
@@ -684,35 +733,49 @@ function PanoramaPanel({
   // ── Reset/fit view ──────────────────────────────────────────────────────────
 
   const resetView = useCallback(() => {
-    if (!containerRef.current || !result) {
+    if (!containerRef.current || !visibleResult) {
       setTx(20);
       setTy(20);
       setScale(1);
       return;
     }
-    const { canvasW, canvasH } = computeLayout(result, collapsedPaths);
+    const { canvasW, canvasH } = computeLayout(visibleResult, collapsedPaths);
     const { clientWidth, clientHeight } = containerRef.current;
     const z = Math.min(clientWidth / canvasW, clientHeight / canvasH, 1);
     setScale(z);
     setTx(Math.max(8, (clientWidth - canvasW * z) / 2));
     setTy(Math.max(8, (clientHeight - canvasH * z) / 2));
-  }, [collapsedPaths, result]);
+  }, [collapsedPaths, visibleResult]);
 
   // Only reset view when result transitions from null → non-null (first load)
   useEffect(() => {
     let frameId: number | null = null;
-    if (result && !prevResultRef.current) {
+    if (visibleResult && !prevResultRef.current) {
       frameId = window.requestAnimationFrame(() => {
         resetView();
       });
     }
-    prevResultRef.current = result;
+    prevResultRef.current = visibleResult;
     return () => {
       if (frameId !== null) {
         window.cancelAnimationFrame(frameId);
       }
     };
-  }, [result, resetView]);
+  }, [visibleResult, resetView]);
+
+  useEffect(() => {
+    if (!visibleResult) {
+      return;
+    }
+
+    const frameId = window.requestAnimationFrame(() => {
+      resetView();
+    });
+
+    return () => {
+      window.cancelAnimationFrame(frameId);
+    };
+  }, [resetView, viewMode, visibleResult]);
 
   // ── Pan (global mouse move) ─────────────────────────────────────────────────
 
@@ -795,11 +858,11 @@ function PanoramaPanel({
   // ── Render ──────────────────────────────────────────────────────────────────
 
   const layout = useMemo(
-    () => (result ? computeLayout(result, collapsedPaths) : null),
-    [collapsedPaths, result],
+    () => (visibleResult ? computeLayout(visibleResult, collapsedPaths) : null),
+    [collapsedPaths, visibleResult],
   );
   const connGroups =
-    layout && result ? computeConnectors(result, layout.nodes, layout.rootY, collapsedPaths) : [];
+    layout && visibleResult ? computeConnectors(visibleResult, layout.nodes, layout.rootY, collapsedPaths) : [];
 
   const totalNodes = resultNodeCount;
 
@@ -990,6 +1053,27 @@ function PanoramaPanel({
         <div className="flex items-center gap-0.5">
           <div className="mr-2 flex items-center gap-1 rounded-md border px-1 py-1" style={{ borderColor: "var(--border)" }}>
             <span className="px-1 text-[10px] uppercase tracking-wider" style={{ color: "var(--muted)" }}>
+              {t.viewMode}
+            </span>
+            {(["panorama", "mainline"] as const).map((value) => {
+              const active = value === viewMode;
+              return (
+                <button
+                  key={value}
+                  onClick={() => setViewMode(value)}
+                  className="rounded px-2 py-0.5 text-[11px] transition-colors"
+                  style={{
+                    background: active ? "var(--accent)" : "transparent",
+                    color: active ? "var(--accent-contrast)" : "var(--muted)",
+                  }}
+                >
+                  {value === "panorama" ? t.panoramaMode : t.mainlineMode}
+                </button>
+              );
+            })}
+          </div>
+          <div className="mr-2 flex items-center gap-1 rounded-md border px-1 py-1" style={{ borderColor: "var(--border)" }}>
+            <span className="px-1 text-[10px] uppercase tracking-wider" style={{ color: "var(--muted)" }}>
               {t.descriptionLanguage}
             </span>
             {(["zh", "en"] as const).map((value) => {
@@ -1099,7 +1183,7 @@ function PanoramaPanel({
           </div>
         )}
 
-        {!loading && !result && (
+        {!loading && !visibleResult && (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 px-4 text-center">
             <Network size={28} style={{ color: "var(--border)" }} />
             <span className="text-xs leading-relaxed" style={{ color: "var(--muted)" }}>
@@ -1108,7 +1192,7 @@ function PanoramaPanel({
           </div>
         )}
 
-        {result && !loading && layout && (
+        {visibleResult && !loading && layout && (
           <div
             ref={containerRef}
             className="absolute inset-0"
@@ -1141,23 +1225,24 @@ function PanoramaPanel({
                 }}
               >
                 <RootCard
-                  name={result.rootFunction}
-                  file={result.entryFile}
-                  onClick={() => onFileClick(result.entryFile)}
-                  moduleColor={getFunctionModule(moduleAnalysis, result.rootFunction)?.color}
-                  isDimmed={selectedModuleId !== null && getFunctionModule(moduleAnalysis, result.rootFunction)?.moduleId !== selectedModuleId}
-                  isHighlighted={selectedModuleId !== null && getFunctionModule(moduleAnalysis, result.rootFunction)?.moduleId === selectedModuleId}
+                  name={visibleResult.rootFunction}
+                  file={visibleResult.entryFile}
+                  onFocus={() => onFocusNode?.(visibleResult.rootFunction, visibleResult.entryFile)}
+                  onClick={() => onFileClick(visibleResult.entryFile)}
+                  moduleColor={getFunctionModule(moduleAnalysis, visibleResult.rootFunction)?.color}
+                  isDimmed={selectedModuleId !== null && getFunctionModule(moduleAnalysis, visibleResult.rootFunction)?.moduleId !== selectedModuleId}
+                  isHighlighted={selectedModuleId !== null && getFunctionModule(moduleAnalysis, visibleResult.rootFunction)?.moduleId === selectedModuleId}
                 />
               </div>
 
-              {result.children.length > 0 && renderActionAnchor(
+              {visibleResult.children.length > 0 && renderActionAnchor(
                 layout.rootX + ROOT_W / 2,
                 layout.rootY + ROOT_H + ACTION_OFFSET_Y,
                 renderToggleButton(
                   collapsedPaths.has("root"),
                   t.rootChildrenCount,
-                  result.children.length,
-                  collapsedPaths.has("root") ? result.children.reduce((sum, child) => sum + 1 + countDescendants(child), 0) : 0,
+                  visibleResult.children.length,
+                  collapsedPaths.has("root") ? visibleResult.children.reduce((sum, child) => sum + 1 + countDescendants(child), 0) : 0,
                   (event) => {
                     event.stopPropagation();
                     toggleCollapsed([]);
@@ -1182,6 +1267,7 @@ function PanoramaPanel({
                         node={ln.node}
                         locale={locale}
                         onFileClick={onFileClick}
+                        onFocusNode={onFocusNode}
                         isAnalyzing={analyzingFunctions?.has(ln.node.name) ?? false}
                         moduleColor={getFunctionModule(moduleAnalysis, ln.node.name)?.color}
                         isDimmed={selectedModuleId !== null && getFunctionModule(moduleAnalysis, ln.node.name)?.moduleId !== selectedModuleId}

@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useEffect, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneDark, oneLight } from "react-syntax-highlighter/dist/esm/styles/prism";
 import { getLanguageFromPath } from "@/lib/github";
@@ -14,6 +14,7 @@ interface CodePanelProps {
   loading: boolean;
   error: string | null;
   locale: AnalysisLocale;
+  focusedFunctionName?: string | null;
 }
 
 const CODE_FONT_SIZE_STORAGE_KEY = "panocode-code-font-size";
@@ -27,29 +28,32 @@ function clampFontSize(size: number) {
 
 const TEXT = {
   zh: {
-    empty: "选择一个文件查看内容",
-    copy: "复制",
+    empty: "选择一个文件，开始查看源码与实现细节",
+    copy: "复制代码",
     copied: "已复制",
-    loading: "加载中",
+    loading: "正在加载",
+    focus: "当前聚焦",
     zoomOut: "缩小字体",
     zoomIn: "放大字体",
     resetZoom: "重置字号",
     fontSizeLabel: "字号",
   },
   en: {
-    empty: "Select a file to view its contents",
-    copy: "Copy",
+    empty: "Open a file to inspect the source and implementation details",
+    copy: "Copy code",
     copied: "Copied",
     loading: "Loading",
+    focus: "Focused",
     zoomOut: "Decrease font size",
     zoomIn: "Increase font size",
     resetZoom: "Reset font size",
-    fontSizeLabel: "Font",
+    fontSizeLabel: "Font Size",
   },
 } as const;
 
-function CodePanel({ path, content, loading, error, locale }: CodePanelProps) {
+function CodePanel({ path, content, loading, error, locale, focusedFunctionName = null }: CodePanelProps) {
   const [copied, setCopied] = useState(false);
+  const contentRef = useRef<HTMLDivElement>(null);
   const [fontSize, setFontSize] = useState(() => {
     if (typeof window === "undefined") {
       return 13;
@@ -67,6 +71,13 @@ function CodePanel({ path, content, loading, error, locale }: CodePanelProps) {
   });
   const theme = useTheme();
   const text = TEXT[locale];
+  const focusedLineNumber = useMemo(() => {
+    if (!content || !focusedFunctionName) return null;
+
+    const lines = content.split(/\r?\n/);
+    const index = lines.findIndex((line) => line.includes(focusedFunctionName));
+    return index >= 0 ? index + 1 : null;
+  }, [content, focusedFunctionName]);
 
   useEffect(() => {
     try {
@@ -75,6 +86,19 @@ function CodePanel({ path, content, loading, error, locale }: CodePanelProps) {
       // Ignore localStorage write failures.
     }
   }, [fontSize]);
+
+  useEffect(() => {
+    if (!focusedLineNumber || !contentRef.current) {
+      return;
+    }
+
+    const target = contentRef.current.querySelector('[data-focus-line="true"]');
+    if (!(target instanceof HTMLElement)) {
+      return;
+    }
+
+    target.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, [focusedLineNumber, content, path]);
 
   const updateFontSize = (delta: number) => {
     setFontSize((current) => clampFontSize(current + delta));
@@ -112,8 +136,19 @@ function CodePanel({ path, content, loading, error, locale }: CodePanelProps) {
     <div className="h-full flex flex-col">
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-2.5 border-b border-[var(--border)] bg-[var(--panel-2)] shrink-0">
-        <div className="flex items-center gap-2 min-w-0">
+        <div className="flex min-w-0 flex-col gap-1">
           <span className="text-[var(--muted)] text-xs truncate">{path}</span>
+          {focusedFunctionName && (
+            <div className="flex items-center gap-1.5 text-[11px]" style={{ color: "var(--muted)" }}>
+              <span
+                className="rounded-full border px-1.5 py-0.5"
+                style={{ borderColor: "var(--border)", background: "var(--panel)" }}
+              >
+                {text.focus}
+              </span>
+              <span className="truncate" style={{ color: "var(--text)" }}>{focusedFunctionName}</span>
+            </div>
+          )}
         </div>
         <div className="flex items-center gap-3 shrink-0 ml-4">
           <div
@@ -165,7 +200,7 @@ function CodePanel({ path, content, loading, error, locale }: CodePanelProps) {
       </div>
 
       {/* Content */}
-      <div className="flex-1 overflow-auto">
+      <div ref={contentRef} className="flex-1 overflow-auto">
         {loading && (
           <div className="h-full flex items-center justify-center text-[var(--muted)] text-sm gap-2">
             <div className="w-4 h-4 border-2 border-[var(--border)] border-t-[var(--accent)] rounded-full animate-spin" />
@@ -182,6 +217,21 @@ function CodePanel({ path, content, loading, error, locale }: CodePanelProps) {
             language={language}
             style={theme === "light" ? oneLight : oneDark}
             showLineNumbers
+            wrapLines
+            lineProps={(lineNumber) => {
+              const isFocusedLine = focusedLineNumber === lineNumber;
+
+              return {
+                "data-focus-line": isFocusedLine ? "true" : undefined,
+                style: {
+                  display: "block",
+                  background: isFocusedLine
+                    ? "color-mix(in srgb, var(--accent) 16%, transparent)"
+                    : undefined,
+                  borderLeft: isFocusedLine ? "2px solid var(--accent)" : undefined,
+                },
+              };
+            }}
             customStyle={{
               margin: 0,
               padding: "1rem",

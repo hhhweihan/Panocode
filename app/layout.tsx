@@ -17,7 +17,12 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "Panocode — GitHub Repository Explorer",
-  description: "Visualize and explore any GitHub repository's code structure with syntax highlighting",
+  description: "AI-powered repository analysis workspace for understanding GitHub repositories and local projects",
+  icons: {
+    icon: "/hi-mark.svg",
+    shortcut: "/hi-mark.svg",
+    apple: "/hi-mark.svg",
+  },
 };
 
 export default function RootLayout({

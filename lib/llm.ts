@@ -19,6 +19,11 @@ export const ChatCompletionsResponseSchema = z.object({
     }),
   ).optional(),
   error: z.object({ message: z.string() }).optional(),
+  usage: z.object({
+    prompt_tokens: z.number().optional(),
+    completion_tokens: z.number().optional(),
+    total_tokens: z.number().optional(),
+  }).optional(),
 });
 
 export type ChatCompletionsResponse = z.infer<typeof ChatCompletionsResponseSchema>;
@@ -38,6 +43,15 @@ export type ProviderAttempt = {
 
 export function normalizeBaseUrl(baseUrl: string) {
   return baseUrl.replace(/\/+$/, "");
+}
+
+function parseModelList(value: string | undefined) {
+  if (!value) return [];
+
+  return value
+    .split(/[\n,]/)
+    .map((item) => item.trim())
+    .filter(Boolean);
 }
 
 export function extractText(content: string | { type?: string; text?: string }[] | undefined): string {
@@ -70,32 +84,55 @@ function buildProviderConfigs(
 ): ProviderConfig[] {
   const githubToken = overrides?.githubToken || process.env.GITHUB_TOKEN;
   const llmApiKey = overrides?.aiApiKey || process.env.LLM_API_KEY || process.env.GEMINI_API_KEY;
+  const githubModels = parseModelList(process.env.GITHUB_ENTRY_MODEL).length > 0
+    ? parseModelList(process.env.GITHUB_ENTRY_MODEL)
+    : ["gpt-4o-mini"];
+  const llmModels = parseModelList(overrides?.aiModel || process.env.LLM_MODEL).length > 0
+    ? parseModelList(overrides?.aiModel || process.env.LLM_MODEL)
+    : ["gemini-2.0-flash"];
 
-  const githubConfig = githubToken
-    ? {
+  const githubConfigs = githubToken
+    ? githubModels.map((model) => ({
         provider: "github-models" as const,
         apiKey: githubToken,
         baseUrl: normalizeBaseUrl(process.env.GITHUB_MODELS_BASE_URL ?? "https://models.inference.ai.azure.com"),
-        model: process.env.GITHUB_ENTRY_MODEL ?? "gpt-4o-mini",
-      }
-    : null;
+        model,
+      }))
+    : [];
 
-  const llmConfig = llmApiKey
-    ? {
+  const llmConfigs = llmApiKey
+    ? llmModels.map((model) => ({
         provider: "llm" as const,
         apiKey: llmApiKey,
         baseUrl: normalizeBaseUrl(overrides?.aiBaseUrl || process.env.LLM_BASE_URL || "https://generativelanguage.googleapis.com/v1beta/openai"),
-        model: overrides?.aiModel || process.env.LLM_MODEL || "gemini-2.0-flash",
-      }
-    : null;
+        model,
+      }))
+    : [];
 
   const configs: ProviderConfig[] = [];
 
-  if (preferGithubModels && githubConfig) configs.push(githubConfig);
-  if (llmConfig) configs.push(llmConfig);
-  if (githubConfig && !configs.some((item) => item.provider === "github-models")) configs.push(githubConfig);
+  if (preferGithubModels) configs.push(...githubConfigs);
+  configs.push(...llmConfigs);
+  if (!preferGithubModels) configs.push(...githubConfigs);
 
-  return configs;
+  return configs.filter(
+    (config, index, list) => list.findIndex(
+      (item) => item.provider === config.provider && item.baseUrl === config.baseUrl && item.model === config.model,
+    ) === index,
+  );
+}
+
+export function isAuthenticationError(status: number, message: string) {
+  if (status === 401) return true;
+  if (status === 403) {
+    return /(auth|authentication|api key|token|unauthorized|forbidden|access denied|invalid key|invalid token)/i.test(message);
+  }
+  return false;
+}
+
+export function isModelConfigurationError(status: number, message: string) {
+  if (status !== 400 && status !== 403) return false;
+  return /(model|does not exist|not found|unsupported|invalid model|available models)/i.test(message);
 }
 
 function shouldFallback(status: number, message: string) {

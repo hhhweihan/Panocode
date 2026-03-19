@@ -16,11 +16,11 @@ import type { AnalysisLocale } from "@/components/AnalysisPanel";
 
 const TEXT = {
   zh: {
-    title: "工作日志",
-    empty: "暂无日志",
+    title: "分析日志 · Activity Log",
+    empty: "分析开始后，这里会显示关键步骤、请求与结果日志",
     request: "请求",
     response: "响应",
-    dock: "停靠",
+    dock: "侧栏",
     float: "浮窗",
     dockTitle: "停靠到侧边栏",
     floatTitle: "切换为浮窗",
@@ -28,8 +28,8 @@ const TEXT = {
     resize: "拖拽调整大小",
   },
   en: {
-    title: "Activity Log",
-    empty: "No logs yet",
+    title: "Activity Log · Analysis",
+    empty: "Workflow, request, and result logs will appear here once analysis starts",
     request: "Request",
     response: "Response",
     dock: "Dock",
@@ -43,8 +43,10 @@ const TEXT = {
 
 const FLOATING_MIN_WIDTH = 280;
 const FLOATING_MIN_HEIGHT = 180;
-const FLOATING_DEFAULT_WIDTH = 380;
-const FLOATING_DEFAULT_HEIGHT = 320;
+const FLOATING_MAX_WIDTH = 460;
+const FLOATING_MAX_HEIGHT = 360;
+const FLOATING_DEFAULT_WIDTH = 400;
+const FLOATING_DEFAULT_HEIGHT = 300;
 const FLOATING_MARGIN = 16;
 
 function clamp(value: number, min: number, max: number) {
@@ -63,13 +65,15 @@ function getDefaultFloatingRect() {
 
   const maxWidth = Math.max(FLOATING_MIN_WIDTH, window.innerWidth - FLOATING_MARGIN * 2);
   const maxHeight = Math.max(FLOATING_MIN_HEIGHT, window.innerHeight - FLOATING_MARGIN * 2);
+  const boundedMaxWidth = Math.min(FLOATING_MAX_WIDTH, maxWidth);
+  const boundedMaxHeight = Math.min(FLOATING_MAX_HEIGHT, maxHeight);
   const saved = window.localStorage.getItem("panocode-log-floating-rect");
 
   if (saved) {
     try {
       const parsed = JSON.parse(saved) as { x: number; y: number; width: number; height: number };
-      const width = clamp(parsed.width, FLOATING_MIN_WIDTH, maxWidth);
-      const height = clamp(parsed.height, FLOATING_MIN_HEIGHT, maxHeight);
+      const width = clamp(parsed.width, FLOATING_MIN_WIDTH, boundedMaxWidth);
+      const height = clamp(parsed.height, FLOATING_MIN_HEIGHT, boundedMaxHeight);
       const x = clamp(parsed.x, FLOATING_MARGIN, window.innerWidth - width - FLOATING_MARGIN);
       const y = clamp(parsed.y, FLOATING_MARGIN, window.innerHeight - height - FLOATING_MARGIN);
 
@@ -79,10 +83,10 @@ function getDefaultFloatingRect() {
   }
 
   return {
-    x: window.innerWidth - FLOATING_DEFAULT_WIDTH - FLOATING_MARGIN,
-    y: window.innerHeight - FLOATING_DEFAULT_HEIGHT - FLOATING_MARGIN,
-    width: FLOATING_DEFAULT_WIDTH,
-    height: FLOATING_DEFAULT_HEIGHT,
+    x: window.innerWidth - Math.min(FLOATING_DEFAULT_WIDTH, boundedMaxWidth) - FLOATING_MARGIN,
+    y: window.innerHeight - Math.min(FLOATING_DEFAULT_HEIGHT, boundedMaxHeight) - FLOATING_MARGIN,
+    width: Math.min(FLOATING_DEFAULT_WIDTH, boundedMaxWidth),
+    height: Math.min(FLOATING_DEFAULT_HEIGHT, boundedMaxHeight),
   };
 }
 
@@ -170,15 +174,18 @@ interface LogPanelProps {
   locale: AnalysisLocale;
   mode: "docked" | "floating";
   onModeChange: (mode: "docked" | "floating") => void;
+  defaultOpen?: boolean;
+  forceOpen?: boolean;
   workflowStatus?: {
     state: "idle" | "working" | "completed" | "error";
     label: string;
   };
 }
 
-export default function LogPanel({ entries, locale, mode, onModeChange, workflowStatus }: LogPanelProps) {
-  const [open, setOpen] = useState(true);
+export default function LogPanel({ entries, locale, mode, onModeChange, defaultOpen = true, forceOpen = false, workflowStatus }: LogPanelProps) {
+  const [open, setOpen] = useState(defaultOpen);
   const text = TEXT[locale];
+  const effectiveOpen = open || forceOpen || workflowStatus?.state === "error";
 
   const isFloating = mode === "floating";
 
@@ -221,12 +228,12 @@ export default function LogPanel({ entries, locale, mode, onModeChange, workflow
           const width = clamp(
             interaction.startWidth + (event.clientX - interaction.startX),
             FLOATING_MIN_WIDTH,
-            window.innerWidth - prev.x - FLOATING_MARGIN
+            Math.min(FLOATING_MAX_WIDTH, window.innerWidth - prev.x - FLOATING_MARGIN)
           );
           const height = clamp(
             interaction.startHeight + (event.clientY - interaction.startY),
             FLOATING_MIN_HEIGHT,
-            window.innerHeight - prev.y - FLOATING_MARGIN
+            Math.min(FLOATING_MAX_HEIGHT, window.innerHeight - prev.y - FLOATING_MARGIN)
           );
 
           return { ...prev, width, height };
@@ -282,7 +289,9 @@ export default function LogPanel({ entries, locale, mode, onModeChange, workflow
         width: `${floatingRect.width}px`,
         height: open ? `${floatingRect.height}px` : "auto",
         minWidth: `${FLOATING_MIN_WIDTH}px`,
+        maxWidth: `${FLOATING_MAX_WIDTH}px`,
         minHeight: open ? `${FLOATING_MIN_HEIGHT}px` : "auto",
+        maxHeight: open ? `${FLOATING_MAX_HEIGHT}px` : "auto",
         overflow: "hidden",
         zIndex: 40,
         border: "1px solid var(--border)",
@@ -363,7 +372,7 @@ export default function LogPanel({ entries, locale, mode, onModeChange, workflow
             className="rounded p-1 transition-colors hover:bg-[var(--hover)]"
             title={text.toggleOpen}
           >
-            {open
+            {effectiveOpen
               ? <ChevronDown size={12} style={{ color: "var(--muted)" }} />
               : <ChevronRight size={12} style={{ color: "var(--muted)" }} />
             }
@@ -372,7 +381,7 @@ export default function LogPanel({ entries, locale, mode, onModeChange, workflow
       </div>
 
       {/* Entries */}
-      {open && (
+      {effectiveOpen && (
         <div
           className="overflow-y-auto"
           style={{
@@ -390,7 +399,7 @@ export default function LogPanel({ entries, locale, mode, onModeChange, workflow
         </div>
       )}
 
-      {isFloating && open && (
+      {isFloating && effectiveOpen && (
         <button
           onMouseDown={startResize}
           className="absolute bottom-1 right-1 flex h-6 w-6 items-center justify-center rounded-md transition-colors hover:bg-[var(--hover)]"

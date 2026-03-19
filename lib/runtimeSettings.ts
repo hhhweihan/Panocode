@@ -23,6 +23,9 @@ export const DEFAULT_RUNTIME_SETTINGS: RuntimeSettings = {
 export const RUNTIME_SETTINGS_STORAGE_KEY = "panocode-runtime-settings";
 export const RUNTIME_SETTINGS_EVENT = "panocode-runtime-settings-updated";
 export const RUNTIME_SETTINGS_HEADER = "x-panocode-runtime-settings";
+export const RUNTIME_SETTINGS_OPEN_EVENT = "panocode-runtime-settings-open";
+
+export const REQUIRED_RUNTIME_SETTINGS_FIELDS = ["aiBaseUrl", "aiApiKey", "aiModel"] as const satisfies RuntimeSettingsField[];
 
 const MAX_DRILL_DEPTH_LIMIT = { min: 1, max: 8 } as const;
 const CRITICAL_CHILD_COUNT_LIMIT = { min: 1, max: 20 } as const;
@@ -188,4 +191,15 @@ export function buildRuntimeSettingsHeaders(settings: RuntimeSettings) {
   return {
     [RUNTIME_SETTINGS_HEADER]: encodeRuntimeSettingsHeader(settings),
   };
+}
+
+export function getMissingRequiredRuntimeSettings(settings: Partial<RuntimeSettings>) {
+  return REQUIRED_RUNTIME_SETTINGS_FIELDS.filter((field) => {
+    const value = settings[field];
+    return typeof value !== "string" || !value.trim();
+  });
+}
+
+export function hasRequiredRuntimeSettings(settings: Partial<RuntimeSettings>) {
+  return getMissingRequiredRuntimeSettings(settings).length === 0;
 }

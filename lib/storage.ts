@@ -4,6 +4,7 @@ import type { EntryCheckResult } from "@/app/api/analyze/entry/route";
 import type { CallgraphResult } from "@/app/api/analyze/callgraph/route";
 import type { LogEntry } from "@/lib/logger";
 import type { ModuleAnalysisResult } from "@/lib/moduleAnalysis";
+import type { AnalysisUsageStats } from "@/lib/usage";
 
 export interface AnalysisRecord {
   id: string;
@@ -32,6 +33,7 @@ export interface AnalysisRecord {
   callgraphResult: CallgraphResult | null;
   moduleAnalysis: ModuleAnalysisResult | null;
   logs: LogEntry[];
+  usageStats?: AnalysisUsageStats;
 }
 
 export interface AnalysisRecordSummary {

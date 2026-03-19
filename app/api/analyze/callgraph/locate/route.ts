@@ -8,6 +8,7 @@ import {
   requestChatCompletionsWithFallback,
 } from "@/lib/llm";
 import { resolveRuntimeSettings } from "@/lib/runtimeSettings";
+import { buildLlmRequestUsage, type LlmRequestUsage } from "@/lib/usage";
 
 // ── Zod schemas ───────────────────────────────────────────────────────────────
 
@@ -18,6 +19,7 @@ const LocateResponseSchema = z.object({
 // ── Route handler ─────────────────────────────────────────────────────────────
 
 export async function POST(req: NextRequest) {
+  let usage: LlmRequestUsage | null = null;
   const body = (await req.json()) as {
     repoName: string;
     functionName: string;
@@ -58,7 +60,7 @@ Return JSON only. No markdown fences. Exact shape:
 }`;
 
   try {
-    const { response: res, raw } = await requestChatCompletionsWithFallback({
+    const { response: res, raw, config, attempts } = await requestChatCompletionsWithFallback({
       payload: {
         temperature: 0,
         response_format: { type: "json_object" },
@@ -74,25 +76,31 @@ Return JSON only. No markdown fences. Exact shape:
     });
 
     const parsedRaw = ChatCompletionsResponseSchema.parse(raw ?? {});
+    usage = buildLlmRequestUsage({
+      config,
+      attempts,
+      raw: parsedRaw,
+      ok: res.ok,
+    });
 
     if (!res.ok) {
       const msg = formatProviderError(parsedRaw.error?.message ?? "LLM API error");
-      return NextResponse.json({ error: msg }, { status: res.status });
+      return NextResponse.json({ error: msg, usage }, { status: res.status });
     }
 
     const text = extractText(parsedRaw.choices?.[0]?.message.content);
-    if (!text) return NextResponse.json({ error: "Empty AI response" }, { status: 500 });
+    if (!text) return NextResponse.json({ error: "Empty AI response", usage }, { status: 500 });
 
     const parsed = LocateResponseSchema.parse(parseJsonObject(text));
-    return NextResponse.json(parsed);
+    return NextResponse.json({ ...parsed, usage });
   } catch (err) {
     if (err instanceof z.ZodError) {
       return NextResponse.json(
-        { error: `Invalid AI response: ${err.issues[0]?.message}` },
+        { error: `Invalid AI response: ${err.issues[0]?.message}`, usage },
         { status: 500 },
       );
     }
     const msg = err instanceof Error ? err.message : "Unknown error";
-    return NextResponse.json({ error: `Locate failed: ${msg}` }, { status: 500 });
+    return NextResponse.json({ error: `Locate failed: ${msg}`, usage }, { status: 500 });
   }
 }

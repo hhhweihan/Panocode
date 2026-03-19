@@ -14,6 +14,7 @@ import {
   RUNTIME_SETTINGS_EVENT,
   RUNTIME_SETTINGS_STORAGE_KEY,
   finalizeRuntimeSettings,
+  getMissingRequiredRuntimeSettings,
   sanitizeRuntimeSettingsInput,
   type RuntimeSettings,
   type RuntimeSettingsEnvSources,
@@ -25,6 +26,8 @@ type RuntimeSettingsContextValue = {
   envSettings: Partial<RuntimeSettings>;
   envSources: RuntimeSettingsEnvSources;
   hydrated: boolean;
+  isAnalysisReady: boolean;
+  missingRequiredSettings: RuntimeSettingsField[];
   saveSettings: (nextSettings: Partial<RuntimeSettings>) => void;
   hasEnvOverride: (field: RuntimeSettingsField) => boolean;
 };
@@ -152,14 +155,21 @@ export function RuntimeSettingsProvider({ children }: { children: ReactNode }) {
     return Object.prototype.hasOwnProperty.call(envSettings, field);
   }, [envSettings]);
 
+  const missingRequiredSettings = useMemo(
+    () => getMissingRequiredRuntimeSettings(settings),
+    [settings],
+  );
+
   const value = useMemo<RuntimeSettingsContextValue>(() => ({
     settings,
     envSettings,
     envSources,
     hydrated,
+    isAnalysisReady: missingRequiredSettings.length === 0,
+    missingRequiredSettings,
     saveSettings,
     hasEnvOverride,
-  }), [envSettings, envSources, hasEnvOverride, hydrated, saveSettings, settings]);
+  }), [envSettings, envSources, hasEnvOverride, hydrated, missingRequiredSettings, saveSettings, settings]);
 
   return (
     <RuntimeSettingsContext.Provider value={value}>

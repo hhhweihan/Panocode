@@ -8,6 +8,7 @@ import {
   requestChatCompletionsWithFallback,
 } from "@/lib/llm";
 import { resolveRuntimeSettings } from "@/lib/runtimeSettings";
+import { buildLlmRequestUsage, type LlmRequestUsage } from "@/lib/usage";
 
 const AnalysisLocaleSchema = z.enum(["zh", "en"]);
 
@@ -87,6 +88,7 @@ const ExpandResponseSchema = z.object({
 // ── Route handler ─────────────────────────────────────────────────────────────
 
 export async function POST(req: NextRequest) {
+  let usage: LlmRequestUsage | null = null;
   const body = (await req.json()) as {
     repoName: string;
     functionName: string;
@@ -158,7 +160,7 @@ Return JSON only. No markdown fences. Exact shape:
 }`;
 
   try {
-    const { response: res, raw } = await requestChatCompletionsWithFallback({
+    const { response: res, raw, config, attempts } = await requestChatCompletionsWithFallback({
       payload: {
         temperature: 0,
         response_format: { type: "json_object" },
@@ -174,27 +176,34 @@ Return JSON only. No markdown fences. Exact shape:
     });
 
     const parsedRaw = ChatCompletionsResponseSchema.parse(raw ?? {});
+    usage = buildLlmRequestUsage({
+      config,
+      attempts,
+      raw: parsedRaw,
+      ok: res.ok,
+    });
 
     if (!res.ok) {
       const msg = formatProviderError(parsedRaw.error?.message ?? "LLM API error");
-      return NextResponse.json({ error: msg }, { status: res.status });
+      return NextResponse.json({ error: msg, usage }, { status: res.status });
     }
 
     const text = extractText(parsedRaw.choices?.[0]?.message.content);
-    if (!text) return NextResponse.json({ error: "Empty AI response" }, { status: 500 });
+    if (!text) return NextResponse.json({ error: "Empty AI response", usage }, { status: 500 });
 
     const parsed = ExpandResponseSchema.parse(parseJsonObject(text));
     return NextResponse.json({
       children: parsed.children.slice(0, settings.criticalChildCount),
+      usage,
     });
   } catch (err) {
     if (err instanceof z.ZodError) {
       return NextResponse.json(
-        { error: `Invalid AI response: ${formatZodIssue(err.issues[0])}` },
+        { error: `Invalid AI response: ${formatZodIssue(err.issues[0])}`, usage },
         { status: 500 },
       );
     }
     const msg = err instanceof Error ? err.message : "Unknown error";
-    return NextResponse.json({ error: `Expand analysis failed: ${msg}` }, { status: 500 });
+    return NextResponse.json({ error: `Expand analysis failed: ${msg}`, usage }, { status: 500 });
   }
 }

@@ -4,9 +4,12 @@ import {
   ChatCompletionsResponseSchema,
   extractText,
   formatProviderError,
+  isAuthenticationError,
+  isModelConfigurationError,
   requestChatCompletionsWithFallback,
 } from "@/lib/llm";
 import { resolveRuntimeSettings } from "@/lib/runtimeSettings";
+import { buildLlmRequestUsage, type LlmRequestUsage } from "@/lib/usage";
 
 const AnalysisLocaleSchema = z.enum(["zh", "en"]);
 
@@ -157,6 +160,7 @@ function extractJsonObject(text: string) {
 }
 
 export async function POST(req: NextRequest) {
+  let usage: LlmRequestUsage | null = null;
   const body = await req.json() as {
     repoName: string;
     filePaths: string[];
@@ -235,7 +239,7 @@ Return JSON only. Do not wrap in markdown fences. Follow this exact shape:
 }`;
 
   try {
-    const { response, raw } = await requestChatCompletionsWithFallback({
+    const { response, raw, config, attempts } = await requestChatCompletionsWithFallback({
       payload: {
         temperature: 0.2,
         messages: [
@@ -253,40 +257,49 @@ Return JSON only. Do not wrap in markdown fences. Follow this exact shape:
     });
 
     const rawData = ChatCompletionsResponseSchema.parse(raw ?? {});
+    usage = buildLlmRequestUsage({
+      config,
+      attempts,
+      raw: rawData,
+      ok: response.ok,
+    });
 
     if (!response.ok) {
       const message = formatProviderError(rawData.error?.message || "LLM API request failed");
-      if (response.status === 400 || response.status === 401 || response.status === 403) {
-        return NextResponse.json({ error: `LLM API authentication failed: ${message}` }, { status: response.status });
+      if (isAuthenticationError(response.status, message)) {
+        return NextResponse.json({ error: `LLM API authentication failed: ${message}`, usage }, { status: response.status });
+      }
+      if (isModelConfigurationError(response.status, message)) {
+        return NextResponse.json({ error: `LLM model configuration failed: ${message}`, usage }, { status: response.status });
       }
       if (response.status === 429) {
-        return NextResponse.json({ error: "LLM API rate limit exceeded, please try again later" }, { status: 429 });
+        return NextResponse.json({ error: "LLM API rate limit exceeded, please try again later", usage }, { status: 429 });
       }
-      return NextResponse.json({ error: `LLM API error: ${message}` }, { status: response.status });
+      return NextResponse.json({ error: `LLM API error: ${message}`, usage }, { status: response.status });
     }
 
     const text = extractText(rawData.choices?.[0]?.message.content);
 
     if (!text) {
-      return NextResponse.json({ error: "AI returned no result" }, { status: 500 });
+      return NextResponse.json({ error: "AI returned no result", usage }, { status: 500 });
     }
 
     const parsedJson = JSON.parse(extractJsonObject(text));
     const result = AnalysisSchema.parse(normalizeAnalysisResult(parsedJson));
     if (!result) {
-      return NextResponse.json({ error: "AI returned no result" }, { status: 500 });
+      return NextResponse.json({ error: "AI returned no result", usage }, { status: 500 });
     }
 
-    return NextResponse.json(result);
+    return NextResponse.json({ ...result, usage });
   } catch (err) {
     if (err instanceof z.ZodError) {
-      return NextResponse.json({ error: `Invalid AI response format: ${err.issues[0]?.message || "unknown schema error"}` }, { status: 500 });
+      return NextResponse.json({ error: `Invalid AI response format: ${err.issues[0]?.message || "unknown schema error"}`, usage }, { status: 500 });
     }
 
     if (err instanceof Error) {
-      return NextResponse.json({ error: `Failed to analyze repository: ${err.message}` }, { status: 500 });
+      return NextResponse.json({ error: `Failed to analyze repository: ${err.message}`, usage }, { status: 500 });
     }
 
-    return NextResponse.json({ error: "Failed to analyze repository" }, { status: 500 });
+    return NextResponse.json({ error: "Failed to analyze repository", usage }, { status: 500 });
   }
 }

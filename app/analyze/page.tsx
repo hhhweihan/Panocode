@@ -13,6 +13,7 @@ import AnalysisPanel from "@/components/AnalysisPanel";
 import type { AnalysisLocale, EntryCheckResult } from "@/components/AnalysisPanel";
 import LogPanel from "@/components/LogPanel";
 import PanoramaPanel from "@/components/PanoramaPanel";
+import AnalysisSummaryBar from "@/components/AnalysisSummaryBar";
 import { useRuntimeSettings } from "@/components/RuntimeSettingsProvider";
 import type { AnalysisResult } from "@/app/api/analyze/route";
 import type { CallgraphResult, CallgraphNode } from "@/app/api/analyze/callgraph/route";
@@ -25,14 +26,22 @@ import {
 import { saveRecord, getRecordById } from "@/lib/storage";
 import type { AnalysisRecord } from "@/lib/storage";
 import { buildMarkdown, downloadMarkdown } from "@/lib/markdownExport";
-import { flattenCallgraphFunctions, type ModuleAnalysisResult } from "@/lib/moduleAnalysis";
-import { buildRuntimeSettingsHeaders } from "@/lib/runtimeSettings";
+import { flattenCallgraphFunctions, getFunctionModule, type ModuleAnalysisResult } from "@/lib/moduleAnalysis";
+import { buildRuntimeSettingsHeaders, getMissingRequiredRuntimeSettings } from "@/lib/runtimeSettings";
+import {
+  EMPTY_ANALYSIS_USAGE_STATS,
+  mergeAnalysisUsageStats,
+  normalizeAnalysisUsageStats,
+  type AnalysisUsageStats,
+  type LlmRequestUsage,
+} from "@/lib/usage";
 import {
   Github,
   ArrowRight,
   Star,
   GitBranch,
   ChevronLeft,
+  History,
   AlertCircle,
   Loader2,
   RefreshCcw,
@@ -62,26 +71,26 @@ const UI_TEXT = {
   zh: {
     invalidUrl: "GitHub URL 格式无效",
     emptyUrl: "请输入 GitHub 仓库地址",
-    analyzeTitle: "开始分析",
+    analyzeTitle: "立即分析",
     repoLoadFailed: "仓库加载失败",
     networkRetry: "网络错误，请重试",
     fileLoadFailed: "文件加载失败",
     fileContentLoadFailed: "文件内容加载失败",
-    files: "文件",
+    files: "仓库文件 · Files",
     loadingTree: "加载文件树中...",
-    emptyRepo: "输入仓库地址以开始探索",
+    emptyRepo: "输入仓库地址后开始查看结构与源码",
   },
   en: {
     invalidUrl: "Invalid GitHub URL format",
     emptyUrl: "Please enter a GitHub repository URL",
-    analyzeTitle: "Analyze",
+    analyzeTitle: "Analyze now",
     repoLoadFailed: "Failed to load repository",
     networkRetry: "Network error, please try again",
     fileLoadFailed: "Failed to load file",
     fileContentLoadFailed: "Failed to load file content",
-    files: "Files",
+    files: "Repo Files",
     loadingTree: "Loading tree...",
-    emptyRepo: "Enter a repository URL to explore",
+    emptyRepo: "Enter a repository URL to inspect structure and code",
   },
 } as const;
 
@@ -139,6 +148,47 @@ function countFiles(tree: TreeNode[]): { files: number; dirs: number } {
   return { files, dirs };
 }
 
+function findCallgraphNodeByFocus(
+  result: CallgraphResult | null,
+  functionName: string | null,
+  filePath: string | null,
+): { name: string; likelyFile: string | null; description: string; routePath: string | null } | null {
+  if (!result || !functionName) return null;
+
+  if (result.rootFunction === functionName && (!filePath || filePath === result.entryFile)) {
+    return {
+      name: result.rootFunction,
+      likelyFile: result.entryFile,
+      description: `Entry/root function in ${result.entryFile}`,
+      routePath: null,
+    };
+  }
+
+  let matched: { name: string; likelyFile: string | null; description: string; routePath: string | null } | null = null;
+
+  function walk(nodes: CallgraphNode[]) {
+    for (const node of nodes) {
+      if (node.name === functionName && (!filePath || !node.likelyFile || node.likelyFile === filePath)) {
+        matched = {
+          name: node.name,
+          likelyFile: node.likelyFile,
+          description: node.description,
+          routePath: node.routePath,
+        };
+        return;
+      }
+
+      if (node.children?.length) {
+        walk(node.children);
+        if (matched) return;
+      }
+    }
+  }
+
+  walk(result.children);
+  return matched;
+}
+
 function AnalyzeContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -161,6 +211,8 @@ function AnalyzeContent() {
   const [fileContent, setFileContent] = useState<string | null>(null);
   const [fileLoading, setFileLoading] = useState(false);
   const [fileError, setFileError] = useState<string | null>(null);
+  const [focusedFunctionName, setFocusedFunctionName] = useState<string | null>(null);
+  const [focusedFunctionPath, setFocusedFunctionPath] = useState<string | null>(null);
 
   const [analysisLoading, setAnalysisLoading] = useState(false);
   const [analysisError, setAnalysisError] = useState<string | null>(null);
@@ -184,7 +236,9 @@ function AnalyzeContent() {
   }>({ state: "idle", stage: "idle" });
 
   const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [usageStats, setUsageStats] = useState<AnalysisUsageStats>(EMPTY_ANALYSIS_USAGE_STATS);
   const [logPanelMode, setLogPanelMode] = useState<"docked" | "floating">("docked");
+  const [hasUserAdjustedLogPanelMode, setHasUserAdjustedLogPanelMode] = useState(false);
   const [leftPanelWidth, setLeftPanelWidth] = useState(288);
   const [treePanelWidth, setTreePanelWidth] = useState(288);
   const [panoramaPanelWidth, setPanoramaPanelWidth] = useState(400);
@@ -195,6 +249,29 @@ function AnalyzeContent() {
   const [currentRecordId, setCurrentRecordId] = useState<string | null>(null);
 
   const runtimeSettingsHeaders = useMemo(() => buildRuntimeSettingsHeaders(settings), [settings]);
+  const missingRequiredSettings = useMemo(() => getMissingRequiredRuntimeSettings(settings), [settings]);
+  const isAnalysisReady = missingRequiredSettings.length === 0;
+  const effectiveLogPanelMode = hasUserAdjustedLogPanelMode
+    ? logPanelMode
+    : workflowState.state === "working"
+      ? "floating"
+      : "docked";
+  const focusedFunction = useMemo(() => {
+    const node = findCallgraphNodeByFocus(callgraphResult, focusedFunctionName, focusedFunctionPath);
+    if (!node || !focusedFunctionName) return null;
+
+    const assignment = getFunctionModule(moduleAnalysis, focusedFunctionName);
+
+    return {
+      name: node.name,
+      filePath: node.likelyFile,
+      description: node.description,
+      moduleName: assignment?.moduleName ?? null,
+      moduleColor: assignment?.color ?? null,
+      routePath: node.routePath,
+    };
+  }, [callgraphResult, focusedFunctionName, focusedFunctionPath, moduleAnalysis]);
+
   const attachRuntimeSettings = useCallback(<T extends Record<string, unknown>>(payload: T) => {
     return {
       ...payload,
@@ -208,6 +285,7 @@ function AnalyzeContent() {
   const callgraphResultRef = useRef<typeof callgraphResult>(null);
   const moduleAnalysisRef = useRef<ModuleAnalysisResult | null>(null);
   const logsRef = useRef<typeof logs>([]);
+  const usageStatsRef = useRef<AnalysisUsageStats>(EMPTY_ANALYSIS_USAGE_STATS);
   const analyzeUrlRef = useRef<string>("");
   const drilldownCacheRef = useRef<Map<string, CallgraphNode[]>>(new Map());
   const callgraphCacheRef = useRef<Partial<Record<AnalysisLocale, CallgraphResult>>>({});
@@ -304,8 +382,21 @@ function AnalyzeContent() {
     document.body.style.userSelect = "none";
   };
 
+  const handleLogPanelModeChange = useCallback((mode: "docked" | "floating") => {
+    setHasUserAdjustedLogPanelMode(true);
+    setLogPanelMode(mode);
+  }, []);
+
   const addLog = useCallback((entry: LogEntry) => {
     setLogs((prev) => [...prev, entry]);
+  }, []);
+
+  const applyUsage = useCallback((usage?: LlmRequestUsage | null) => {
+    if (!usage) {
+      return;
+    }
+
+    setUsageStats((prev) => mergeAnalysisUsageStats(prev, usage));
   }, []);
 
   useEffect(() => {
@@ -321,6 +412,7 @@ function AnalyzeContent() {
   useEffect(() => { callgraphResultRef.current = callgraphResult; }, [callgraphResult]);
   useEffect(() => { moduleAnalysisRef.current = moduleAnalysis; }, [moduleAnalysis]);
   useEffect(() => { logsRef.current = logs; }, [logs]);
+  useEffect(() => { usageStatsRef.current = usageStats; }, [usageStats]);
 
   const getProjectName = useCallback((info: AnalyzedProjectInfo) => {
     if (info.source === "local") {
@@ -372,6 +464,7 @@ function AnalyzeContent() {
       callgraphResult: callgraphResultRef.current,
       moduleAnalysis: moduleAnalysisRef.current,
       logs: logsRef.current,
+      usageStats: usageStatsRef.current,
     };
     saveRecord(record);
     setCurrentRecordId(record.id);
@@ -582,7 +675,8 @@ function AnalyzeContent() {
             body: JSON.stringify(attachRuntimeSettings(locateRequest)),
           });
           if (locRes.ok) {
-            const locData = await locRes.json() as { suggestedFiles: string[] };
+            const locData = await locRes.json() as { suggestedFiles: string[]; usage?: LlmRequestUsage | null };
+            applyUsage(locData.usage);
             addLog(makeLogEntry("info", `函数定位：${node.name} 已返回候选文件`, { response: locData }));
             for (const suggestedFile of locData.suggestedFiles) {
               const content = await fetchContent(suggestedFile);
@@ -592,7 +686,8 @@ function AnalyzeContent() {
               }
             }
           } else {
-            const locError = await locRes.json() as { error?: string };
+            const locError = await locRes.json() as { error?: string; usage?: LlmRequestUsage | null };
+            applyUsage(locError.usage);
             addLog(makeLogEntry("warning", `函数定位失败：${node.name} — ${locError.error ?? "unknown error"}`, { response: locError }));
           }
         } catch { /* ignore locate errors */ }
@@ -648,7 +743,8 @@ function AnalyzeContent() {
           body: JSON.stringify(attachRuntimeSettings(expandRequest)),
         });
         if (expandRes.ok) {
-          const expandData = await expandRes.json() as { children: CallgraphNode[] };
+          const expandData = await expandRes.json() as { children: CallgraphNode[]; usage?: LlmRequestUsage | null };
+          applyUsage(expandData.usage);
           drilldownCacheRef.current.set(cacheKey, expandData.children);
           addLog(makeLogEntry("success", `递归分析：${node.name} AI 返回 ${expandData.children.length} 个关键子函数`, { response: expandData }));
           if (expandData.children.length > 0) {
@@ -669,14 +765,15 @@ function AnalyzeContent() {
               });
           }
         } else {
-          const expandError = await expandRes.json() as { error?: string };
+          const expandError = await expandRes.json() as { error?: string; usage?: LlmRequestUsage | null };
+          applyUsage(expandError.usage);
           addLog(makeLogEntry("warning", `递归分析失败：${node.name} — ${expandError.error ?? "unknown error"}`, { response: expandError }));
         }
       } catch { /* ignore expand errors */ }
       setAnalyzingFunctions((prev) => { const s = new Set(prev); s.delete(node.name); return s; });
     }
     return localResult;
-  }, [addLog, attachRuntimeSettings, fetchFileContent, getProjectName, settings.maxDrillDepth]);
+  }, [addLog, applyUsage, attachRuntimeSettings, fetchFileContent, getProjectName, settings.maxDrillDepth]);
 
   const handleManualDrilldown = useCallback(async (path: number[]) => {
     const info = repoInfo;
@@ -743,7 +840,8 @@ function AnalyzeContent() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(attachRuntimeSettings(locateRequest)),
         });
-        const locateData = await locateRes.json() as { error?: string; suggestedFiles?: string[] };
+        const locateData = await locateRes.json() as { error?: string; suggestedFiles?: string[]; usage?: LlmRequestUsage | null };
+        applyUsage(locateData.usage);
 
         if (locateRes.ok && locateData.suggestedFiles) {
           for (const suggestedFile of locateData.suggestedFiles) {
@@ -788,7 +886,8 @@ function AnalyzeContent() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(attachRuntimeSettings(expandRequest)),
         });
-        const expandData = await expandRes.json() as { error?: string; children?: CallgraphNode[] };
+        const expandData = await expandRes.json() as { error?: string; children?: CallgraphNode[]; usage?: LlmRequestUsage | null };
+        applyUsage(expandData.usage);
 
         if (!expandRes.ok) {
           addLog(makeLogEntry("warning", `手动下钻失败：${expandData.error ?? "expand failed"}`));
@@ -838,6 +937,7 @@ function AnalyzeContent() {
     }
   }, [
     addLog,
+    applyUsage,
     attachRuntimeSettings,
     fetchRepoFileContent,
     getProjectName,
@@ -873,10 +973,11 @@ function AnalyzeContent() {
           functions: flattenCallgraphFunctions(graphResult),
         })),
       });
-      const data = await res.json();
+      const data = await res.json() as (ModuleAnalysisResult & { error?: string; usage?: LlmRequestUsage | null });
+      applyUsage(data.usage);
 
       if (!res.ok) {
-        const msg = (data as { error?: string }).error ?? "模块划分失败";
+        const msg = data.error ?? "模块划分失败";
         addLog(makeLogEntry("warning", `模块划分失败：${msg}`));
         return null;
       }
@@ -894,7 +995,7 @@ function AnalyzeContent() {
       addLog(makeLogEntry("warning", "模块划分：网络请求失败"));
       return null;
     }
-  }, [addLog, attachRuntimeSettings, getProjectLocation, getProjectName]);
+  }, [addLog, applyUsage, attachRuntimeSettings, getProjectLocation, getProjectName]);
 
   useEffect(() => {
     runModuleAnalysisRef.current = runModuleAnalysis;
@@ -939,10 +1040,11 @@ function AnalyzeContent() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(attachRuntimeSettings(callgraphRequest)),
       });
-      const data = await res.json();
+      const data = await res.json() as (CallgraphResult & { error?: string; usage?: LlmRequestUsage | null });
+      applyUsage(data.usage);
 
       if (!res.ok) {
-        const msg = (data as { error?: string }).error ?? "调用图分析失败";
+        const msg = data.error ?? "调用图分析失败";
         addLog(makeLogEntry("warning", `调用图分析失败：${msg}`));
         return;
       }
@@ -981,7 +1083,7 @@ function AnalyzeContent() {
     } finally {
       setCallgraphLoading(false);
     }
-  }, [addLog, attachRuntimeSettings, getProjectName, persistCallgraphArtifact, runModuleAnalysis, runRecursiveAnalysis, triggerSave]);
+  }, [addLog, applyUsage, attachRuntimeSettings, getProjectName, persistCallgraphArtifact, runModuleAnalysis, runRecursiveAnalysis, triggerSave]);
 
   const resolveConfirmedEntryContext = useCallback(async () => {
     if (confirmedEntryContextRef.current) {
@@ -1094,10 +1196,11 @@ function AnalyzeContent() {
             fileContent: truncated,
           })),
         });
-        const data = await res.json();
+        const data = await res.json() as (EntryCheckResult & { error?: string; usage?: LlmRequestUsage | null });
+        applyUsage(data.usage);
 
         if (!res.ok) {
-          const msg = (data as { error?: string }).error ?? "研判失败";
+          const msg = data.error ?? "研判失败";
           addLog(makeLogEntry("warning", `入口研判：${entry.path} — ${msg}`));
           continue;
         }
@@ -1124,7 +1227,7 @@ function AnalyzeContent() {
     if (!confirmedEntryFound) {
       setWorkflowState({ state: "completed", stage: "complete" });
     }
-  }, [addLog, attachRuntimeSettings, fetchFileContent, getProjectLocation, getProjectName, runCallgraphAnalysis]);
+  }, [addLog, applyUsage, attachRuntimeSettings, fetchFileContent, getProjectLocation, getProjectName, runCallgraphAnalysis]);
 
   const fetchAnalysis = useCallback(async (info: AnalyzedProjectInfo, locale: AnalysisLocale) => {
     setWorkflowState({ state: "working", stage: "analysis" });
@@ -1178,10 +1281,11 @@ function AnalyzeContent() {
           },
         })),
       });
-      const data = await res.json();
+      const data = await res.json() as (AnalysisResult & { error?: string; usage?: LlmRequestUsage | null });
+      applyUsage(data.usage);
 
       if (!res.ok) {
-        const msg = (data as { error?: string }).error || "分析失败";
+        const msg = data.error || "分析失败";
         setAnalysisError(msg);
         setWorkflowState({ state: "error", stage: "error" });
         addLog(makeLogEntry("error", `AI 分析失败：${msg}`));
@@ -1212,7 +1316,7 @@ function AnalyzeContent() {
     } finally {
       setAnalysisLoading(false);
     }
-  }, [addLog, attachRuntimeSettings, getProjectName, runEntryAnalysis]);
+  }, [addLog, applyUsage, attachRuntimeSettings, getProjectName, runEntryAnalysis]);
 
   const resetAnalysisSession = useCallback((initialLogs: LogEntry[] = []) => {
     setInputError("");
@@ -1239,6 +1343,8 @@ function AnalyzeContent() {
     callgraphCacheRef.current = {};
     confirmedEntryContextRef.current = null;
     setLogs(initialLogs);
+    setUsageStats(EMPTY_ANALYSIS_USAGE_STATS);
+    usageStatsRef.current = EMPTY_ANALYSIS_USAGE_STATS;
   }, []);
 
   const fetchGithubTree = useCallback(async (url: string) => {
@@ -1429,11 +1535,12 @@ function AnalyzeContent() {
     callgraphCacheRef.current = {};
     confirmedEntryContextRef.current = null;
     setLogs(record.logs);
+    setUsageStats(normalizeAnalysisUsageStats(record.usageStats));
     setWorkflowState({ state: "completed", stage: "complete" });
   }, []);
 
   useEffect(() => {
-    if (!settingsHydrated) {
+    if (!settingsHydrated || !isAnalysisReady) {
       return;
     }
 
@@ -1452,9 +1559,22 @@ function AnalyzeContent() {
       setInputUrl(url);
       fetchGithubTree(url);
     }
-  }, [fetchGithubTree, fetchLocalTree, localMode, localName, localPath, restoreFromRecord, searchParams, settingsHydrated, source]);
+  }, [fetchGithubTree, fetchLocalTree, isAnalysisReady, localMode, localName, localPath, restoreFromRecord, searchParams, settingsHydrated, source]);
+
+  useEffect(() => {
+    if (!settingsHydrated || isAnalysisReady) {
+      return;
+    }
+
+    router.replace("/?config=required");
+  }, [isAnalysisReady, router, settingsHydrated]);
 
   const handleAnalyze = () => {
+    if (!isAnalysisReady) {
+      router.replace("/?config=required");
+      return;
+    }
+
     const trimmed = inputUrl.trim();
 
     if (source === "local") {
@@ -1519,6 +1639,11 @@ function AnalyzeContent() {
     }
   }, [handleFileClick, repoInfo]);
 
+  const handleFocusNode = useCallback((functionName: string, filePath: string | null) => {
+    setFocusedFunctionName(functionName);
+    setFocusedFunctionPath(filePath);
+  }, []);
+
   const handleAnalysisLocaleChange = useCallback((locale: AnalysisLocale) => {
     setAnalysisLocale(locale);
 
@@ -1534,6 +1659,21 @@ function AnalyzeContent() {
     }
   }, [analysisCache, fetchAnalysis, repoInfo]);
 
+  if (settingsHydrated && !isAnalysisReady) {
+    return (
+      <div className="flex h-screen items-center justify-center px-6 text-center" style={{ background: "var(--bg)" }}>
+        <div className="max-w-md rounded-2xl border px-6 py-6" style={{ borderColor: "var(--border)", background: "var(--panel)" }}>
+          <div className="text-base font-semibold" style={{ color: "var(--text)" }}>
+            检测到 AI 配置未完成，正在返回首页
+          </div>
+          <p className="mt-2 text-sm leading-6" style={{ color: "var(--muted)" }}>
+            请先补齐 {missingRequiredSettings.join(" / ")}，再开始仓库分析。
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="h-screen flex flex-col overflow-hidden" style={{ background: "var(--bg)" }}>
       {mounted && source === "local" && localMode === "client" && !localFileStore.getHandle() && !repoInfo && !treeLoading && (
@@ -1542,71 +1682,125 @@ function AnalyzeContent() {
           style={{ background: "var(--bg)" }}
         >
           <p className="text-base" style={{ color: "var(--text)" }}>
-            本地文件夹连接已断开。请返回首页重新选择文件夹。
+            本地文件夹连接已断开，请返回首页重新选择文件夹。<br />
+            Local folder access has expired. Reconnect it from the home page.
           </p>
           <button
             onClick={() => router.push("/")}
             className="px-4 py-2 rounded-lg text-sm font-semibold"
             style={{ background: "var(--accent)", color: "var(--accent-contrast)" }}
           >
-            返回首页
+            返回首页 · Back Home
           </button>
         </div>
       )}
 
       {/* Top bar */}
       <header
-        className="flex items-center gap-3 px-4 py-2.5 border-b shrink-0"
+        className="flex items-center justify-between gap-3 px-4 py-3 border-b shrink-0"
         style={{ borderColor: "var(--border)", background: "var(--panel)" }}
       >
-        <button
-          onClick={() => router.push("/")}
-          className="flex items-center gap-1.5 text-sm transition-colors"
-          style={{ color: "var(--muted)" }}
-        >
-          <ChevronLeft size={16} />
-          <span className="font-semibold" style={{ color: "var(--accent)" }}>
-            Panocode
-          </span>
-        </button>
-        {repoInfo && (
-          <>
-            <span style={{ color: "var(--border)" }}>/</span>
-            <span className="text-sm font-medium truncate max-w-[24rem]" style={{ color: "var(--text)" }}>
-              {getProjectName(repoInfo)}
+        <div className="flex min-w-0 flex-1 items-center gap-3">
+          <button
+            onClick={() => router.push("/")}
+            className="flex items-center gap-1.5 text-sm transition-colors shrink-0"
+            style={{ color: "var(--muted)" }}
+          >
+            <ChevronLeft size={16} />
+            <span className="font-semibold" style={{ color: "var(--accent)" }}>
+              Panocode
             </span>
-            {repoInfo.source === "local" && (
-              <span
-                className="flex items-center gap-1 text-xs px-2 py-0.5 rounded-full border shrink-0"
-                style={{ color: "var(--muted)", borderColor: "var(--border)" }}
-              >
-                <FolderOpen size={11} />
-                本地项目
-              </span>
+          </button>
+
+          <div className="hidden h-5 w-px shrink-0 sm:block" style={{ background: "var(--border)" }} />
+
+          <div className="min-w-0 flex-1">
+            {repoInfo ? (
+              <>
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-sm font-medium truncate max-w-[28rem]" style={{ color: "var(--text)" }}>
+                    {getProjectName(repoInfo)}
+                  </span>
+                  <span
+                    className="rounded-full border px-2 py-0.5 text-[10px] uppercase tracking-wider"
+                    style={{
+                      color: "var(--muted)",
+                      borderColor: "var(--border)",
+                      background: "var(--panel-2)",
+                    }}
+                  >
+                    {repoInfo.source === "local" ? "Local Workspace" : "GitHub Repository"}
+                  </span>
+                  <span
+                    className="rounded-full border px-2 py-0.5 text-[10px] uppercase tracking-wider"
+                    style={{
+                      color: workflowState.state === "error"
+                        ? "var(--error)"
+                        : workflowState.state === "completed"
+                          ? "var(--success)"
+                          : workflowState.state === "working"
+                            ? "var(--accent)"
+                            : "var(--muted)",
+                      borderColor: workflowState.state === "error"
+                        ? "color-mix(in srgb, var(--error) 60%, var(--border))"
+                        : workflowState.state === "completed"
+                          ? "color-mix(in srgb, var(--success) 50%, var(--border))"
+                          : workflowState.state === "working"
+                            ? "color-mix(in srgb, var(--accent) 50%, var(--border))"
+                            : "var(--border)",
+                      background: workflowState.state === "error"
+                        ? "color-mix(in srgb, var(--error) 10%, transparent)"
+                        : workflowState.state === "completed"
+                          ? "color-mix(in srgb, var(--success) 10%, transparent)"
+                          : workflowState.state === "working"
+                            ? "color-mix(in srgb, var(--accent) 10%, transparent)"
+                            : "var(--panel-2)",
+                    }}
+                  >
+                    {WORKFLOW_LABELS[analysisLocale][workflowState.stage]}
+                  </span>
+                  {isRestoredFromHistory && (
+                    <span
+                      className="flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] uppercase tracking-wider"
+                      style={{
+                        color: "var(--muted)",
+                        borderColor: "var(--border)",
+                        background: "var(--panel-2)",
+                      }}
+                    >
+                      <History size={10} />
+                      Snapshot
+                    </span>
+                  )}
+                </div>
+                <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs" style={{ color: "var(--muted)" }}>
+                  {repoInfo.source === "local" && repoInfo.localPath && (
+                    <span className="truncate max-w-[36rem]">{repoInfo.localPath}</span>
+                  )}
+                  {repoInfo.source !== "local" && repoInfo.stars !== undefined && (
+                    <span className="flex items-center gap-1">
+                      <Star size={11} />
+                      {repoInfo.stars.toLocaleString()}
+                    </span>
+                  )}
+                  {repoInfo.source !== "local" && repoInfo.branch && (
+                    <span className="flex items-center gap-1">
+                      <GitBranch size={11} />
+                      {repoInfo.branch}
+                    </span>
+                  )}
+                </div>
+              </>
+            ) : (
+              <div className="text-sm" style={{ color: "var(--muted)" }}>
+                代码库工作台 · Analyze structure, entry flow, and call graphs
+              </div>
             )}
-            {repoInfo.source === "local" && repoInfo.localPath && (
-              <span className="text-xs truncate max-w-[24rem]" style={{ color: "var(--muted)" }}>
-                {repoInfo.localPath}
-              </span>
-            )}
-            {repoInfo.source !== "local" && repoInfo.stars !== undefined && (
-              <span
-                className="flex items-center gap-1 text-xs px-2 py-0.5 rounded-full border"
-                style={{ color: "var(--muted)", borderColor: "var(--border)" }}
-              >
-                <Star size={11} />
-                {repoInfo.stars.toLocaleString()}
-              </span>
-            )}
-            {repoInfo.source !== "local" && repoInfo.branch && (
-              <span
-                className="flex items-center gap-1 text-xs px-2 py-0.5 rounded-full border"
-                style={{ color: "var(--muted)", borderColor: "var(--border)" }}
-              >
-                <GitBranch size={11} />
-                {repoInfo.branch}
-              </span>
-            )}
+          </div>
+        </div>
+
+        {repoInfo && (
+          <div className="flex shrink-0 flex-wrap items-center gap-2 justify-end">
             {isRestoredFromHistory && (
               <button
                 onClick={() => {
@@ -1616,10 +1810,10 @@ function AnalyzeContent() {
                 }}
                 className="flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full border transition-colors"
                 style={{ color: "var(--accent)", borderColor: "var(--accent)" }}
-                title={repoInfo.source === "local" ? "重新分析当前本地项目" : "Re-analyze this repository"}
+                title="重新分析当前项目 · Re-run analysis"
               >
                 <RefreshCcw size={11} />
-                {repoInfo.source === "local" ? "重新分析" : "Re-analyze"}
+                重新分析 · Re-run
               </button>
             )}
             {currentRecordId !== null && (
@@ -1632,15 +1826,30 @@ function AnalyzeContent() {
                 }}
                 className="flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full border transition-colors"
                 style={{ color: "var(--muted)", borderColor: "var(--border)" }}
-                title="Export analysis as Markdown"
+                title="导出 Markdown 报告 · Export analysis as Markdown"
               >
                 <Download size={11} />
-                Export MD
+                导出报告 · MD
               </button>
             )}
-          </>
+          </div>
         )}
       </header>
+
+      <AnalysisSummaryBar
+        locale={analysisLocale}
+        repoInfo={repoInfo}
+        analysisResult={analysisResult}
+        callgraphResult={callgraphResult}
+        moduleAnalysis={moduleAnalysis}
+        entryCheckResults={entryCheckResults}
+        usageStats={usageStats}
+        workflowStatus={{
+          state: workflowState.state,
+          label: WORKFLOW_LABELS[analysisLocale][workflowState.stage],
+        }}
+        isSnapshot={isRestoredFromHistory}
+      />
 
       {/* Main 3-column layout */}
       <div className="flex-1 flex overflow-hidden">
@@ -1670,8 +1879,8 @@ function AnalyzeContent() {
                 }}
                 onKeyDown={(e) => e.key === "Enter" && handleAnalyze()}
                   placeholder={source === "local"
-                    ? (localMode === "client" ? "已选择本地文件夹" : "C:/path/to/project")
-                    : "github.com/owner/repo"}
+                    ? (localMode === "client" ? "已选择本地文件夹 · Selected local folder" : "输入本地项目路径，例如 C:/Code/my-project")
+                    : "粘贴 GitHub 仓库地址，例如 github.com/owner/repo"}
                 className="flex-1 bg-transparent outline-none min-w-0"
                 style={{ color: "var(--text)", fontSize: "12px" }}
                   readOnly={source === "local" && localMode === "client"}
@@ -1693,7 +1902,7 @@ function AnalyzeContent() {
             )}
             {source === "local" && localMode === "client" && inputUrl && (
               <p className="mt-1.5 text-xs" style={{ color: "var(--muted)" }}>
-                当前通过浏览器本地文件夹句柄读取项目代码。
+                当前通过浏览器本地文件夹句柄读取项目代码。Local code is being read directly from your browser session.
               </p>
             )}
           </div>
@@ -1702,8 +1911,10 @@ function AnalyzeContent() {
           <LogPanel
             entries={logs}
             locale={analysisLocale}
-            mode={logPanelMode}
-            onModeChange={setLogPanelMode}
+            mode={effectiveLogPanelMode}
+            onModeChange={handleLogPanelModeChange}
+            defaultOpen={false}
+            forceOpen={workflowState.state === "working"}
             workflowStatus={{
               state: workflowState.state,
               label: WORKFLOW_LABELS[analysisLocale][workflowState.stage],
@@ -1727,6 +1938,7 @@ function AnalyzeContent() {
                 onModuleSelect={setSelectedModuleId}
                 entryCheckResults={entryCheckResults}
                 checkingEntryPath={checkingEntryPath}
+                focusedFunction={focusedFunction}
               />
             )}
           </div>
@@ -1769,7 +1981,7 @@ function AnalyzeContent() {
             {!treeLoading && !treeError && !repoInfo && (
               <div className="flex flex-col items-center gap-2 py-12 px-4 text-center" style={{ color: "var(--muted)" }}>
                 {source === "local" ? <FolderOpen size={24} /> : <Github size={24} />}
-                <p className="text-xs">{source === "local" ? "选择本地项目后开始分析" : text.emptyRepo}</p>
+                <p className="text-xs">{source === "local" ? "选择本地项目后开始查看结构与源码" : text.emptyRepo}</p>
               </div>
             )}
             {repoInfo && !treeLoading && (
@@ -1799,6 +2011,7 @@ function AnalyzeContent() {
             loading={fileLoading}
             error={fileError}
             locale={analysisLocale}
+            focusedFunctionName={selectedPath && selectedPath === focusedFunctionPath ? focusedFunctionName : null}
           />
         </div>
 
@@ -1826,6 +2039,7 @@ function AnalyzeContent() {
             descriptionLocale={callgraphDescriptionLocale}
             onDescriptionLocaleChange={handleCallgraphDescriptionLocaleChange}
             onFileClick={handleEntryFileClick}
+            onFocusNode={handleFocusNode}
             onManualDrilldown={handleManualDrilldown}
             analyzingFunctions={analyzingFunctions}
             manualDrilldownPaths={manualDrilldownPaths}

@@ -1,43 +1,151 @@
 # Panocode
 
-Panocode is a Next.js app for exploring public GitHub repositories with AI-assisted project analysis, entry-point detection, call graph expansion, and functional module grouping.
+[English](README.en.md)
 
-## Features
+AI 驱动的代码仓库理解工作台，用于分析 GitHub 仓库与本地项目的结构、入口、调用图和功能模块。
 
-- Analyze repository structure, languages, and tech stack
-- Verify probable entry files with AI
-- Generate a recursive function panorama / call graph
-- Expand or collapse panorama nodes and manually drill a single node one level deeper
-- Group analyzed functions into up to 10 functional modules
-- Color panorama nodes by module and filter the graph by module
-- Show workflow status directly in the AI log panel
-- Save call graph and module analysis results into project files under analysis-output/
+Panocode 是一个面向代码仓库理解与演示的 AI 驱动分析工具。它可以读取 GitHub 仓库或本地项目，自动识别项目结构、候选入口文件、关键调用链和功能模块，并以可视化方式帮助你快速建立对代码库的整体认知。
 
-## Getting Started
+## GitHub 仓库展示文案建议
 
-First, run the development server:
+如果你准备把这个项目公开发布到 GitHub，仓库信息建议优先用英文，原因是搜索和传播更直接。
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+推荐仓库描述：
+
+```text
+AI-powered workspace for understanding GitHub repositories and local codebases through entry analysis, call graph visualization, and module mapping.
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+推荐副标题短句：
 
-## AI Analysis Setup
+```text
+Understand a codebase faster.
+```
 
-Create a local environment file before using the repository analysis feature:
+推荐 Topics：
+
+```text
+ai code-analysis code-visualization call-graph repository-analysis github nextjs react typescript developer-tools
+```
+
+如果你更想保留中文表达，也可以使用这个中文描述：
+
+```text
+一个面向 GitHub 仓库与本地项目的 AI 代码理解工具，支持入口分析、调用图可视化和模块归类。
+```
+
+适合的使用场景：
+
+- 快速理解一个陌生仓库的整体结构
+- 做技术调研、二次开发前的代码摸底
+- 向团队成员演示项目入口和关键调用路径
+- 对大型仓库进行 AI 辅助的函数级浏览
+- 输出结构化分析结果，作为文档或后续自动化处理的输入
+
+## 核心能力
+
+- 支持 GitHub 公共仓库分析
+- 支持本地项目分析
+- 自动识别语言分布、技术栈和候选入口文件
+- 对候选入口进行二次研判，减少误判
+- 生成入口函数的全景调用图，并支持递归扩展
+- 按功能模块对函数进行归类和着色
+- 支持文件树浏览、代码查看、日志追踪
+- 支持导出 Markdown 和分析结果 JSON
+- 支持运行时配置 AI 提供商、模型和分析深度
+
+## 效果预览
+
+项目部署后，建议优先在这里补上首页与分析页截图。对大多数访问者来说，截图是判断这个工具是否值得继续了解的最快方式。
+
+建议补充：
+
+- 首页首屏截图：突出产品定位、双入口和价值点
+- 分析工作台截图：展示文件树、源码、仓库洞察、调用全景
+- 如果后续支持在线 Demo，也可以在这里补一个公开访问地址
+
+当前占位：
+
+```text
+[待补] 首页截图
+[待补] 分析页截图
+[待补] 在线 Demo 地址
+```
+
+## 部署后建议更新
+
+项目部署到服务器后，建议同步更新这些仓库展示内容：
+
+- 在 README 顶部增加在线体验入口
+- 在 GitHub About 区补上官网或演示地址
+- 用真实界面截图替换当前占位
+- 如果开始版本迭代，补充 CHANGELOG 或路线图
+
+## 项目定位
+
+如果要用一句话描述这个项目：
+
+Panocode 是一个用于“看懂代码仓库”的可视化 AI 分析工作台，而不是一个通用聊天工具，也不是传统静态代码分析器。
+
+它更偏向“仓库认知”和“结构理解”，强调以下几个问题：
+
+- 这个项目是做什么的
+- 从哪里开始执行
+- 核心流程怎么串起来
+- 哪些函数或模块值得优先阅读
+- 我能否把分析结果保存下来继续使用
+
+## 功能流程
+
+Panocode 的分析流程大致如下：
+
+1. 加载仓库信息与文件树
+2. 识别项目语言、技术栈和候选入口文件
+3. 逐个校验候选入口文件
+4. 基于已确认入口生成顶层调用图
+5. 递归扩展关键调用节点
+6. 对已分析函数进行模块归类
+7. 将结果保存为 JSON 或导出为 Markdown
+
+## 界面说明
+
+主界面由以下区域组成：
+
+- FileTree：查看仓库目录结构
+- CodePanel：查看源码内容与高亮
+- AnalysisPanel：查看 AI 生成的项目摘要、入口判断、技术栈等信息
+- PanoramaPanel：查看调用图、递归扩展结果和模块着色
+- LogPanel：查看工作流状态、错误信息和 AI 分析日志
+
+## 快速开始
+
+### 运行环境
+
+- Node.js 20 或更高版本
+- npm 10 或更高版本
+- 一个可用的 OpenAI 兼容接口，或可选的 GitHub Models 配置
+
+### 安装依赖
+
+```bash
+npm install
+```
+
+### 配置环境变量
+
+先复制示例配置：
 
 ```bash
 cp .env.local.example .env.local
 ```
 
-Then configure these values in `.env.local`:
+Windows PowerShell 也可以直接执行：
+
+```powershell
+Copy-Item .env.local.example .env.local
+```
+
+然后至少配置以下变量：
 
 ```dotenv
 LLM_API_KEY="your-dashscope-api-key"
@@ -45,14 +153,7 @@ LLM_BASE_URL="https://dashscope.aliyuncs.com/compatible-mode/v1"
 LLM_MODEL="qwen-plus"
 ```
 
-Notes:
-
-- `.env.local` is already ignored by git via `.gitignore`, so your key should stay out of source control.
-- The analysis route reads `LLM_API_KEY`, `LLM_BASE_URL`, and `LLM_MODEL` from the server environment.
-- The analysis route uses an OpenAI-compatible chat completions API, so you can switch providers by changing only these environment variables.
-- A working Aliyun DashScope / 百炼 example is shown above. If you switch back to Gemini later, update only the same three variables.
-
-Additional optional values:
+可选变量：
 
 ```dotenv
 GITHUB_TOKEN="your-github-token"
@@ -61,63 +162,124 @@ NEXT_PUBLIC_CALLGRAPH_MAX_DEPTH="2"
 NEXT_PUBLIC_CALLGRAPH_KEY_CHILDREN_LIMIT="10"
 ```
 
-The app also provides a settings dialog in the top-right corner. Those settings are persisted in browser storage. If both browser storage and environment variables are present, the environment variables win at startup and are shown in the settings dialog as the effective values.
+说明：
 
-## Analysis Workflow
+- 项目默认使用 OpenAI 兼容的 Chat Completions 接口
+- 你可以替换为阿里云百炼、Google AI Studio 兼容层或其他兼容服务
+- 如果启用 GitHub Models，可使用 GITHUB_TOKEN 作为入口研判等环节的补充能力
+- 右上角设置面板中的运行时配置会持久化在浏览器本地存储中
+- 若环境变量和浏览器设置同时存在，启动时以环境变量为准
 
-1. Load repository metadata and file tree from GitHub
-2. Analyze repository languages, tech stack, and candidate entry files
-3. Verify candidate entry files one by one
-4. Build the top-level call graph for the confirmed entry file
-5. Recursively expand key functions
-6. Allow manual one-level drill-down for suggested or uncertain leaf nodes
-7. Save the current call graph JSON into analysis-output/
-8. Group all analyzed functions into functional modules
-9. Save the module analysis JSON into analysis-output/
+### 启动开发环境
 
-## Output Files
+```bash
+npm run dev
+```
 
-When call graph analysis completes, the app writes a JSON artifact to:
+默认访问地址：
+
+- http://localhost:3000
+
+### 生产构建
+
+```bash
+npm run build
+npm run start
+```
+
+### 代码检查
+
+```bash
+npm run lint
+```
+
+## 使用说明
+
+### 分析 GitHub 仓库
+
+1. 在首页选择 GitHub 分析
+2. 输入仓库地址，例如 https://github.com/microsoft/vscode
+3. 点击 Analyze
+4. 等待文件树、项目分析、入口研判、调用图生成完成
+
+### 分析本地项目
+
+1. 在首页切换到本地项目
+2. 直接输入本地路径，或在支持 File System Access API 的浏览器中选择文件夹
+3. 点击 Analyze
+4. 进入分析页后查看文件树、代码内容和调用图结果
+
+## 输出结果
+
+调用图分析完成后，项目会生成：
 
 ```text
 analysis-output/<repo-name>.callgraph.json
 ```
 
-The saved JSON includes:
-
-- repository name and URL
-- project summary and description
-- current panorama call graph tree, including manually drilled nodes
-
-When module analysis completes, the app writes a JSON artifact to:
+模块分析完成后，项目会生成：
 
 ```text
 analysis-output/<repo-name>.module-analysis.json
 ```
 
-The saved JSON includes:
+这些结果通常包含：
 
-- repository name and URL
-- project summary and description
-- languages and tech stack
-- module list
-- function-to-module assignments
+- 仓库名和来源地址
+- 项目摘要和说明
+- 已确认入口文件
+- 当前调用图树
+- 语言分布与技术栈
+- 模块列表和函数归属关系
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## 目录结构
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```text
+app/                 Next.js App Router 页面与 API 路由
+components/          页面面板与交互组件
+lib/                 GitHub、LLM、调用图、存储等核心逻辑
+public/              静态资源
+docs/                设计文档与规划
+```
 
-## Learn More
+## 技术栈
 
-To learn more about Next.js, take a look at the following resources:
+- Next.js 16
+- React 19
+- TypeScript
+- Tailwind CSS 4
+- Lucide React
+- Zod
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## 当前限制
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+- 调用图和模块分析依赖 LLM，结果不是严格静态分析结论
+- 对超大仓库、动态语言和高度反射式框架，入口识别可能存在偏差
+- GitHub 侧主要面向公共仓库；若遇到限流或模型权限问题，需要配置额外凭证
+- 本地项目分析依赖浏览器能力或本地路径访问方式，不同环境体验会有差异
 
-## Deploy on Vercel
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## 开发提示
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- 核心入口页面在 [app/page.tsx](app/page.tsx) 和 [app/analyze/page.tsx](app/analyze/page.tsx)
+- 运行时配置逻辑在 [lib/runtimeSettings.ts](lib/runtimeSettings.ts)
+- LLM 调用封装在 [lib/llm.ts](lib/llm.ts)
+- 调用图相关逻辑主要在 [lib/callgraphBridge.ts](lib/callgraphBridge.ts) 和 [lib/callgraphUtils.ts](lib/callgraphUtils.ts)
+
+## 常见问题
+
+### 1. 为什么启动后无法分析仓库？
+
+通常是因为未配置 AI 提供商，或 API Key 无效。请优先检查 .env.local 中的 LLM_API_KEY、LLM_BASE_URL、LLM_MODEL。
+
+### 2. 为什么入口文件识别不准确？
+
+入口识别本质上是 AI 辅助推断，并非编译器级精确解析。对多入口项目、脚手架项目或高度动态的代码结构，可能需要人工二次判断。
+
+### 3. 为什么本地项目无法直接选择文件夹？
+
+浏览器文件夹选择依赖 File System Access API，并非所有浏览器都完整支持。你也可以直接输入本地路径走服务端模式。
+
+## English Version
+
+English documentation is available in [README.en.md](README.en.md).

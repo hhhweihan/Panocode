@@ -1,9 +1,13 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Eye, EyeOff, KeyRound, Save, Settings2, Shield, X } from "lucide-react";
+import { AlertTriangle, Eye, EyeOff, KeyRound, Save, Settings2, Shield, X } from "lucide-react";
 import { useRuntimeSettings } from "@/components/RuntimeSettingsProvider";
-import { type RuntimeSettings, type RuntimeSettingsField } from "@/lib/runtimeSettings";
+import {
+  RUNTIME_SETTINGS_OPEN_EVENT,
+  type RuntimeSettings,
+  type RuntimeSettingsField,
+} from "@/lib/runtimeSettings";
 
 const FIELD_TEXT: Array<{
   field: RuntimeSettingsField;
@@ -82,7 +86,15 @@ function SensitiveToggle({
 }
 
 export default function SettingsControl() {
-  const { settings, envSources, hydrated, saveSettings, hasEnvOverride } = useRuntimeSettings();
+  const {
+    settings,
+    envSources,
+    hydrated,
+    saveSettings,
+    hasEnvOverride,
+    isAnalysisReady,
+    missingRequiredSettings,
+  } = useRuntimeSettings();
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState<RuntimeSettings>(settings);
   const [showSecrets, setShowSecrets] = useState<Record<"aiApiKey" | "githubToken", boolean>>({
@@ -106,6 +118,18 @@ export default function SettingsControl() {
       window.removeEventListener("keydown", handleKeyDown);
     };
   }, [open]);
+
+  useEffect(() => {
+    const handleOpen = () => {
+      setDraft(settings);
+      setOpen(true);
+    };
+
+    window.addEventListener(RUNTIME_SETTINGS_OPEN_EVENT, handleOpen);
+    return () => {
+      window.removeEventListener(RUNTIME_SETTINGS_OPEN_EVENT, handleOpen);
+    };
+  }, [settings]);
 
   const overriddenFields = useMemo(
     () => FIELD_TEXT.filter((item) => hasEnvOverride(item.field)),
@@ -136,13 +160,15 @@ export default function SettingsControl() {
         }}
         className="inline-flex h-10 w-10 items-center justify-center rounded-full border transition-colors hover:bg-[var(--hover)]"
         style={{
-          borderColor: "color-mix(in srgb, var(--border) 92%, transparent)",
+          borderColor: isAnalysisReady
+            ? "color-mix(in srgb, var(--border) 92%, transparent)"
+            : "color-mix(in srgb, var(--warning, #f59e0b) 46%, var(--border))",
           background: "color-mix(in srgb, var(--panel) 88%, transparent)",
-          color: "var(--text)",
+          color: isAnalysisReady ? "var(--text)" : "var(--warning, #f59e0b)",
           boxShadow: "0 8px 22px color-mix(in srgb, var(--bg) 14%, transparent)",
         }}
         aria-label="打开设置"
-        title="设置"
+        title={isAnalysisReady ? "设置" : "设置（需补充 AI 配置）"}
       >
         <Settings2 size={17} />
       </button>
@@ -183,6 +209,24 @@ export default function SettingsControl() {
             </div>
 
             <div className="overflow-y-auto px-5 py-5">
+              {!isAnalysisReady && (
+                <div
+                  className="mb-5 rounded-xl border px-4 py-3"
+                  style={{
+                    borderColor: "color-mix(in srgb, var(--warning, #f59e0b) 42%, var(--border))",
+                    background: "color-mix(in srgb, var(--warning, #f59e0b) 10%, var(--panel))",
+                  }}
+                >
+                  <div className="flex items-center gap-2 text-sm font-medium" style={{ color: "var(--text)" }}>
+                    <AlertTriangle size={15} style={{ color: "var(--warning, #f59e0b)" }} />
+                    分析前还需要补充配置
+                  </div>
+                  <p className="mt-1 text-xs leading-relaxed" style={{ color: "var(--muted)" }}>
+                    当前缺少 {missingRequiredSettings.join(" / ")}。补齐后才能进入分析工作台。
+                  </p>
+                </div>
+              )}
+
               {overriddenFields.length > 0 && (
                 <div
                   className="mb-5 rounded-xl border px-4 py-3"

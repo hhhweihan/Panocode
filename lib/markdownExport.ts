@@ -1,6 +1,7 @@
 import type { AnalysisRecord } from "@/lib/storage";
 import type { TreeNode } from "@/lib/github";
 import type { CallgraphNode, CallgraphResult } from "@/app/api/analyze/callgraph/route";
+import { getAverageTokensPerCall, normalizeAnalysisUsageStats } from "@/lib/usage";
 
 // ── File tree ASCII ───────────────────────────────────────────────────────────
 
@@ -79,6 +80,7 @@ export function buildMarkdown(record: AnalysisRecord): string {
   const { repoMeta, analysisResult, entryCheckResults, callgraphResult, moduleAnalysis, logs, fileTree, url } = record;
   const { owner, repo, branch, description, stars } = repoMeta;
   const analyzedDate = new Date(record.analyzedAt).toLocaleString();
+  const usageStats = normalizeAnalysisUsageStats(record.usageStats);
 
   const lines: string[] = [];
 
@@ -188,6 +190,17 @@ export function buildMarkdown(record: AnalysisRecord): string {
       lines.push(`Saved file: \`${moduleAnalysis.savedFilePath}\``);
       lines.push("");
     }
+  }
+
+  if (usageStats.modelCallCount > 0 || usageStats.totalTokens > 0) {
+    lines.push("## Model Usage");
+    lines.push("");
+    lines.push(`- Model calls: ${usageStats.modelCallCount}`);
+    lines.push(`- Prompt tokens: ${usageStats.promptTokens}`);
+    lines.push(`- Completion tokens: ${usageStats.completionTokens}`);
+    lines.push(`- Total tokens: ${usageStats.totalTokens}`);
+    lines.push(`- Average tokens per call: ${getAverageTokensPerCall(usageStats)}`);
+    lines.push("");
   }
 
   // Agent Work Log
