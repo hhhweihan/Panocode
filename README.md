@@ -2,40 +2,11 @@
 
 [English](README.en.md)
 
-AI 驱动的代码仓库理解工作台，用于分析 GitHub 仓库与本地项目的结构、入口、调用图和功能模块。
+AI 代码仓库理解工作台，用于分析 GitHub 仓库与本地项目的结构、入口、调用图和功能模块。
 
 Panocode 是一个面向代码仓库理解与演示的 AI 驱动分析工具。它可以读取 GitHub 仓库或本地项目，自动识别项目结构、候选入口文件、关键调用链和功能模块，并以可视化方式帮助你快速建立对代码库的整体认知。
 
-## GitHub 仓库展示文案建议
-
-如果你准备把这个项目公开发布到 GitHub，仓库信息建议优先用英文，原因是搜索和传播更直接。
-
-推荐仓库描述：
-
-```text
-AI-powered workspace for understanding GitHub repositories and local codebases through entry analysis, call graph visualization, and module mapping.
-```
-
-推荐副标题短句：
-
-```text
-Understand a codebase faster.
-```
-
-推荐 Topics：
-
-```text
-ai code-analysis code-visualization call-graph repository-analysis github nextjs react typescript developer-tools
-```
-
-如果你更想保留中文表达，也可以使用这个中文描述：
-
-```text
-一个面向 GitHub 仓库与本地项目的 AI 代码理解工具，支持入口分析、调用图可视化和模块归类。
-```
-
-适合的使用场景：
-
+## 适合的使用场景
 - 快速理解一个陌生仓库的整体结构
 - 做技术调研、二次开发前的代码摸底
 - 向团队成员演示项目入口和关键调用路径
@@ -56,10 +27,6 @@ ai code-analysis code-visualization call-graph repository-analysis github nextjs
 
 ## 效果预览
 
-项目部署后，建议优先在这里补上首页与分析页截图。对大多数访问者来说，截图是判断这个工具是否值得继续了解的最快方式。
-
-建议补充：
-
 - 首页首屏截图：突出产品定位、双入口和价值点
 - 分析工作台截图：展示文件树、源码、仓库洞察、调用全景
 - 如果后续支持在线 Demo，也可以在这里补一个公开访问地址
@@ -71,29 +38,6 @@ ai code-analysis code-visualization call-graph repository-analysis github nextjs
 [待补] 分析页截图
 [待补] 在线 Demo 地址
 ```
-
-## 部署后建议更新
-
-项目部署到服务器后，建议同步更新这些仓库展示内容：
-
-- 在 README 顶部增加在线体验入口
-- 在 GitHub About 区补上官网或演示地址
-- 用真实界面截图替换当前占位
-- 如果开始版本迭代，补充 CHANGELOG 或路线图
-
-## 项目定位
-
-如果要用一句话描述这个项目：
-
-Panocode 是一个用于“看懂代码仓库”的可视化 AI 分析工作台，而不是一个通用聊天工具，也不是传统静态代码分析器。
-
-它更偏向“仓库认知”和“结构理解”，强调以下几个问题：
-
-- 这个项目是做什么的
-- 从哪里开始执行
-- 核心流程怎么串起来
-- 哪些函数或模块值得优先阅读
-- 我能否把分析结果保存下来继续使用
 
 ## 功能流程
 

@@ -2,109 +2,73 @@
 
 [中文说明](README.md)
 
-An AI-powered workspace for understanding GitHub repositories and local codebases through entry analysis, call graph visualization, and module mapping.
+AI workspace for understanding GitHub repositories and local codebases through structure analysis, entry detection, call graph visualization, and module grouping.
 
-Panocode is an AI-powered repository analysis workspace for understanding codebases. It can inspect GitHub repositories or local projects, identify likely entry points, generate a high-level call graph, group functions into modules, and present the results in a visual, explorable interface.
+Panocode is an AI-powered tool for codebase understanding and demonstration. It can read either a public GitHub repository or a local project, automatically identify project structure, candidate entry files, key call chains, and functional modules, then present the results in a visual workspace so you can build a high-level mental model of the codebase quickly.
 
-## Recommended GitHub Repository Metadata
+## Good Fit Scenarios
 
-Suggested repository description:
-
-```text
-AI-powered workspace for understanding GitHub repositories and local codebases through entry analysis, call graph visualization, and module mapping.
-```
-
-Suggested short tagline:
-
-```text
-Understand a codebase faster.
-```
-
-Suggested topics:
-
-```text
-ai code-analysis code-visualization call-graph repository-analysis github nextjs react typescript developer-tools
-```
-
-## What This Project Is
-
-Panocode is best described as a codebase understanding tool.
-
-It is designed to answer questions such as:
-
-- What does this repository do?
-- Where does execution start?
-- What are the key call paths?
-- Which modules or functions should I read first?
-- Can I keep the analysis output for documentation or follow-up work?
-
-This is not a traditional static analyzer, and it is not a general-purpose chat UI. Its focus is repository comprehension and architecture discovery.
+- Quickly understand the overall structure of an unfamiliar repository
+- Do technical research before extending or integrating a project
+- Demonstrate project entry points and key execution paths to teammates
+- Browse large repositories with AI-assisted function-level exploration
+- Export structured analysis results for documentation or follow-up automation
 
 ## Core Features
 
 - Analyze public GitHub repositories
 - Analyze local projects
-- Detect languages, tech stack, and candidate entry files
-- Re-check candidate entry files to reduce false positives
-- Generate a recursive call graph from the confirmed entry point
-- Group analyzed functions into functional modules
-- Browse file tree and source code side by side
-- Inspect workflow progress in the log panel
-- Export Markdown and persist JSON analysis artifacts
+- Detect language distribution, tech stack, and candidate entry files
+- Re-evaluate candidate entry files to reduce false positives
+- Generate a panoramic call graph from the entry function and expand it recursively
+- Group functions by functional module and color-code them
+- Browse the file tree, inspect source code, and review workflow logs
+- Export Markdown reports and JSON analysis results
+- Configure AI provider, model, and analysis depth at runtime
 
 ## Preview
 
-Once the project is deployed, this section should be updated with real screenshots. For most visitors, screenshots are the fastest way to decide whether the product is worth trying.
-
-Recommended additions:
-
-- Home page hero screenshot
-- Analysis workspace screenshot showing tree, code, insights, and call graph
-- Public demo URL when available
+- Home page screenshot highlighting product positioning, dual entry options, and value proposition
+- Analysis workspace screenshot showing the file tree, source code, repository insights, and call panorama
+- A public demo URL can be added here later if one becomes available
 
 Current placeholders:
 
 ```text
 [TODO] Home page screenshot
-[TODO] Analysis workspace screenshot
+[TODO] Analysis page screenshot
 [TODO] Public demo URL
 ```
 
-## What To Update After Deployment
-
-After deployment, these repository-facing assets are worth updating:
-
-- Add a live demo link near the top of the README
-- Add the public site or demo URL to the GitHub About section
-- Replace placeholder screenshots with real UI captures
-- Add a changelog or roadmap once releases start evolving
-
 ## Workflow
 
-1. Load repository metadata and file tree
-2. Analyze languages, tech stack, and candidate entry files
-3. Verify candidate entry files one by one
-4. Build the top-level call graph from the confirmed entry
-5. Expand key nodes recursively
+Panocode follows this general analysis flow:
+
+1. Load repository information and file tree
+2. Identify project languages, tech stack, and candidate entry files
+3. Validate candidate entry files one by one
+4. Generate the top-level call graph from the confirmed entry
+5. Recursively expand key call nodes
 6. Group analyzed functions into modules
-7. Export or save the results
+7. Save the result as JSON or export it as Markdown
 
-## Tech Stack
+## Interface Overview
 
-- Next.js 16
-- React 19
-- TypeScript
-- Tailwind CSS 4
-- Lucide React
-- Zod
+The main workspace is composed of these areas:
+
+- FileTree: browse the repository directory structure
+- CodePanel: inspect source code with highlighting
+- AnalysisPanel: review AI-generated summaries, entry-point decisions, and tech stack insights
+- PanoramaPanel: inspect the call graph, recursive expansion results, and module coloring
+- LogPanel: follow workflow states, errors, and AI analysis logs
 
 ## Getting Started
 
 ### Requirements
 
-- Node.js 20+
-- npm 10+
-- An OpenAI-compatible API provider, or optional GitHub Models credentials
+- Node.js 20 or higher
+- npm 10 or higher
+- An available OpenAI-compatible API provider, or optional GitHub Models credentials
 
 ### Install Dependencies
 
@@ -114,13 +78,19 @@ npm install
 
 ### Configure Environment Variables
 
-Copy the example file first:
+Copy the example configuration first:
 
 ```bash
 cp .env.local.example .env.local
 ```
 
-Then configure at least these values:
+On Windows PowerShell, you can also run:
+
+```powershell
+Copy-Item .env.local.example .env.local
+```
+
+Then configure at least these variables:
 
 ```dotenv
 LLM_API_KEY="your-dashscope-api-key"
@@ -128,7 +98,7 @@ LLM_BASE_URL="https://dashscope.aliyuncs.com/compatible-mode/v1"
 LLM_MODEL="qwen-plus"
 ```
 
-Optional values:
+Optional variables:
 
 ```dotenv
 GITHUB_TOKEN="your-github-token"
@@ -139,10 +109,11 @@ NEXT_PUBLIC_CALLGRAPH_KEY_CHILDREN_LIMIT="10"
 
 Notes:
 
-- The project uses an OpenAI-compatible Chat Completions API interface
-- You can swap providers by changing environment variables only
-- Runtime settings from the top-right panel are stored in browser storage
-- If both env vars and browser settings exist, env vars take precedence on startup
+- The project uses an OpenAI-compatible Chat Completions API by default
+- You can replace the provider with DashScope, Google AI Studio compatible layers, or other compatible services
+- If GitHub Models is enabled, GITHUB_TOKEN can be used as a supplemental capability for entry verification and related steps
+- Runtime settings in the top-right settings panel are persisted in browser local storage
+- If both environment variables and browser settings are present, environment variables take precedence at startup
 
 ### Start the Development Server
 
@@ -150,7 +121,7 @@ Notes:
 npm run dev
 ```
 
-Open:
+Default URL:
 
 - http://localhost:3000
 
@@ -167,58 +138,92 @@ npm run start
 npm run lint
 ```
 
-## Using the App
+## Usage
 
 ### Analyze a GitHub Repository
 
-1. Choose the GitHub tab on the home page
-2. Enter a repository URL such as https://github.com/microsoft/vscode
+1. Choose GitHub analysis on the home page
+2. Enter a repository URL, for example https://github.com/microsoft/vscode
 3. Click Analyze
-4. Wait for the workflow to complete
+4. Wait for the file tree, project analysis, entry verification, and call graph generation to finish
 
 ### Analyze a Local Project
 
-1. Switch to the Local Project tab
-2. Enter a local path, or choose a folder in supported browsers
+1. Switch to Local Project on the home page
+2. Enter a local path directly, or choose a folder in browsers that support the File System Access API
 3. Click Analyze
-4. Inspect the tree, code, summary, and graph panels
+4. Open the analysis workspace and inspect the tree, source code, and call graph results
 
 ## Output Files
 
-Call graph output:
+After call graph analysis finishes, the project generates:
 
 ```text
 analysis-output/<repo-name>.callgraph.json
 ```
 
-Module analysis output:
+After module analysis finishes, the project generates:
 
 ```text
 analysis-output/<repo-name>.module-analysis.json
 ```
 
-Typical contents include:
+These results usually include:
 
-- repository name and source URL
-- project summary
-- confirmed entry file
-- current call graph tree
-- languages and tech stack
-- modules and function assignments
+- Repository name and source URL
+- Project summary and description
+- Confirmed entry file
+- Current call graph tree
+- Language distribution and tech stack
+- Module list and function ownership
 
 ## Project Structure
 
 ```text
-app/                 App Router pages and API routes
-components/          UI panels and reusable components
-lib/                 Core logic for GitHub, LLM, call graph, storage
+app/                 Next.js App Router pages and API routes
+components/          Workspace panels and interaction components
+lib/                 Core logic for GitHub, LLM, call graph, and storage
 public/              Static assets
-docs/                Design docs and planning notes
+docs/                Design documents and planning notes
 ```
+
+## Tech Stack
+
+- Next.js 16
+- React 19
+- TypeScript
+- Tailwind CSS 4
+- Lucide React
+- Zod
 
 ## Current Limitations
 
-- Call graph and module results depend on LLM output rather than strict static analysis
-- Very large repositories and highly dynamic frameworks may reduce accuracy
-- GitHub analysis is mainly aimed at public repositories
-- Local project support depends on browser capabilities or server-side path access
+- Call graph and module analysis depend on LLM output and are not strict static-analysis results
+- Entry detection may be inaccurate for very large repositories, dynamic languages, or highly reflective frameworks
+- GitHub analysis is primarily aimed at public repositories; additional credentials may be required for rate limits or model access
+- Local project analysis depends on browser capabilities or local path access, so behavior may vary by environment
+
+## Development Notes
+
+- The main entry pages are [app/page.tsx](app/page.tsx) and [app/analyze/page.tsx](app/analyze/page.tsx)
+- Runtime settings logic lives in [lib/runtimeSettings.ts](lib/runtimeSettings.ts)
+- LLM integration is implemented in [lib/llm.ts](lib/llm.ts)
+- Call graph logic mainly lives in [lib/callgraphBridge.ts](lib/callgraphBridge.ts) and [lib/callgraphUtils.ts](lib/callgraphUtils.ts)
+
+## FAQ
+
+### 1. Why can the app start but fail to analyze a repository?
+
+The most common cause is missing or invalid AI provider configuration. Check LLM_API_KEY, LLM_BASE_URL, and LLM_MODEL in .env.local first.
+
+### 2. Why is entry-file recognition sometimes inaccurate?
+
+Entry detection is AI-assisted inference rather than compiler-level exact parsing. Multi-entry projects, scaffold-heavy projects, and highly dynamic code structures may still require manual review.
+
+### 3. Why can I not choose a local folder directly in the browser?
+
+Folder selection depends on the File System Access API, which is not fully supported in every browser. You can also enter a local path directly and use the server-side path mode.
+
+## English Version
+
+This file is the English documentation. The Chinese version is available in [README.md](README.md).
