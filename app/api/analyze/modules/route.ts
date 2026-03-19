@@ -9,6 +9,7 @@ import {
   parseJsonObject,
   requestChatCompletionsWithFallback,
 } from "@/lib/llm";
+import { resolveRuntimeSettings } from "@/lib/runtimeSettings";
 import {
   MODULE_COLOR_PALETTE,
   type FunctionModule,
@@ -94,6 +95,7 @@ export async function POST(req: NextRequest) {
     locale?: "zh" | "en";
     summary?: string | null;
     description?: string | null;
+    settings?: unknown;
     languages: { name: string; percentage: number }[];
     techStack: { name: string; category: string }[];
     functions: {
@@ -109,6 +111,10 @@ export async function POST(req: NextRequest) {
   const { repoName, repoUrl, summary, description, languages, techStack, functions } = body;
   const locale = body.locale ?? "zh";
   const functionNames = functions.map((item) => item.name);
+  const { settings } = resolveRuntimeSettings({
+    bodySettings: body.settings,
+    headerSettings: req.headers.get("x-panocode-runtime-settings"),
+  });
 
   const languageInstruction = locale === "zh"
     ? "Write module names and descriptions in Simplified Chinese when appropriate."
@@ -159,6 +165,7 @@ Return JSON only. Exact shape:
           { role: "user", content: prompt },
         ],
       },
+      settings,
     });
 
     const parsedRaw = ChatCompletionsResponseSchema.parse(raw ?? {});

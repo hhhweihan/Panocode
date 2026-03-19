@@ -6,6 +6,7 @@ import {
   formatProviderError,
   requestChatCompletionsWithFallback,
 } from "@/lib/llm";
+import { resolveRuntimeSettings } from "@/lib/runtimeSettings";
 
 const AnalysisLocaleSchema = z.enum(["zh", "en"]);
 
@@ -160,6 +161,7 @@ export async function POST(req: NextRequest) {
     repoName: string;
     filePaths: string[];
     locale?: AnalysisLocale;
+    settings?: unknown;
     repoContext?: {
       description?: string | null;
       homepage?: string | null;
@@ -176,6 +178,10 @@ export async function POST(req: NextRequest) {
   const { repoName, filePaths } = body;
   const locale = AnalysisLocaleSchema.catch("zh").parse(body.locale);
   const repoContext = body.repoContext;
+  const { settings } = resolveRuntimeSettings({
+    bodySettings: body.settings,
+    headerSettings: req.headers.get("x-panocode-runtime-settings"),
+  });
 
   if (!repoName || !Array.isArray(filePaths) || filePaths.length === 0) {
     return NextResponse.json({ error: "Missing repoName or filePaths" }, { status: 400 });
@@ -243,6 +249,7 @@ Return JSON only. Do not wrap in markdown fences. Follow this exact shape:
           },
         ],
       },
+      settings,
     });
 
     const rawData = ChatCompletionsResponseSchema.parse(raw ?? {});

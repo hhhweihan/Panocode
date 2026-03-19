@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { useRouter } from "next/navigation";
 import { parseGithubUrl } from "@/lib/github";
 import { ArrowRight, FolderOpen, Github, History } from "lucide-react";
@@ -48,8 +48,10 @@ function HistoryCard({
     >
       <div className="flex items-start justify-between gap-2">
         <div className="flex items-center gap-1.5 min-w-0">
-          {isLocal && (
+          {isLocal ? (
             <FolderOpen size={13} style={{ color: "var(--muted)", flexShrink: 0 }} />
+          ) : (
+            <Github size={13} style={{ color: "var(--muted)", flexShrink: 0 }} />
           )}
           <span className="text-sm font-medium truncate" style={{ color: "var(--text)" }}>
             {summary.repoName}
@@ -61,6 +63,9 @@ function HistoryCard({
       </div>
       <div className="mt-0.5 text-xs truncate" style={{ color: "var(--muted)" }}>
         {displayUrl}
+      </div>
+      <div className="mt-1 text-[11px]" style={{ color: "var(--muted)" }}>
+        {isLocal ? "本地项目" : "GitHub 仓库"}
       </div>
       {summary.topLanguages.length > 0 && (
         <div className="mt-1.5 flex items-center gap-2.5">
@@ -98,6 +103,15 @@ export default function HomePage() {
   const [localError, setLocalError] = useState("");
   const [localPickerMode, setLocalPickerMode] = useState<"server" | "client">("server");
   const [mounted, setMounted] = useState(false);
+
+  const githubHistory = useMemo(
+    () => history.filter((item) => (item.source ?? "github") !== "local").slice(0, 6),
+    [history],
+  );
+  const localHistory = useMemo(
+    () => history.filter((item) => (item.source ?? "github") === "local").slice(0, 6),
+    [history],
+  );
 
   // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { setMounted(true); }, []);
@@ -164,6 +178,24 @@ export default function HomePage() {
   };
 
   const examples = ["vercel/next.js", "facebook/react", "microsoft/vscode"];
+
+  const handleHistoryOpen = (item: AnalysisRecordSummary) => {
+    const isLocal = (item.source ?? "github") === "local";
+    if (!isLocal) {
+      router.push(`/analyze?url=${encodeURIComponent(item.url)}&historyId=${item.id}`);
+      return;
+    }
+
+    if (item.url.startsWith("local:")) {
+      const displayName = item.url.slice("local:".length) || item.repoName;
+      router.push(
+        `/analyze?source=local&mode=client&name=${encodeURIComponent(displayName)}&historyId=${item.id}`,
+      );
+      return;
+    }
+
+    router.push(`/analyze?source=local&path=${encodeURIComponent(item.url)}&historyId=${item.id}`);
+  };
 
   return (
     <main
@@ -383,23 +415,42 @@ export default function HomePage() {
                 Recent analyses
               </span>
             </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-              {history.slice(0, 6).map((item) => (
-                <HistoryCard
-                  key={item.id}
-                  summary={item}
-                  onClick={() => {
-                    const isLocal = (item.source ?? "github") === "local";
-                    if (isLocal) {
-                      router.push(`/analyze?source=local&path=${encodeURIComponent(item.url)}`);
-                    } else {
-                      router.push(
-                        `/analyze?url=${encodeURIComponent(item.url)}&historyId=${item.id}`
-                      );
-                    }
-                  }}
-                />
-              ))}
+            <div className="space-y-5">
+              {githubHistory.length > 0 && (
+                <section>
+                  <div className="mb-2 flex items-center gap-2 text-xs" style={{ color: "var(--muted)" }}>
+                    <Github size={12} />
+                    <span>GitHub 仓库</span>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    {githubHistory.map((item) => (
+                      <HistoryCard
+                        key={item.id}
+                        summary={item}
+                        onClick={() => handleHistoryOpen(item)}
+                      />
+                    ))}
+                  </div>
+                </section>
+              )}
+
+              {localHistory.length > 0 && (
+                <section>
+                  <div className="mb-2 flex items-center gap-2 text-xs" style={{ color: "var(--muted)" }}>
+                    <FolderOpen size={12} />
+                    <span>本地项目</span>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    {localHistory.map((item) => (
+                      <HistoryCard
+                        key={item.id}
+                        summary={item}
+                        onClick={() => handleHistoryOpen(item)}
+                      />
+                    ))}
+                  </div>
+                </section>
+              )}
             </div>
           </div>
         )}

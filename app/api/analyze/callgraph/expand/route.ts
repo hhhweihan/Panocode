@@ -7,6 +7,7 @@ import {
   parseJsonObject,
   requestChatCompletionsWithFallback,
 } from "@/lib/llm";
+import { resolveRuntimeSettings } from "@/lib/runtimeSettings";
 
 const AnalysisLocaleSchema = z.enum(["zh", "en"]);
 
@@ -93,10 +94,15 @@ export async function POST(req: NextRequest) {
     functionSnippet: string;
     allFilePaths: string[];
     locale?: "zh" | "en";
+    settings?: unknown;
   };
 
   const { repoName, functionName, filePath, functionSnippet, allFilePaths } = body;
   const locale = AnalysisLocaleSchema.catch("zh").parse(body.locale);
+  const { settings } = resolveRuntimeSettings({
+    bodySettings: body.settings,
+    headerSettings: req.headers.get("x-panocode-runtime-settings"),
+  });
   const fileListSample = allFilePaths.slice(0, 300).join("\n");
   const languageInstruction = locale === "zh"
     ? "Write description in Simplified Chinese. Keep code identifiers, file paths, library names, and technical proper nouns in their standard original form when appropriate."
@@ -116,7 +122,7 @@ ${functionSnippet}
 Repository file paths (for locating callees):
 ${fileListSample}
 
-Task: Identify up to 20 key functions, methods, or modules directly called from this function that are truly significant to understanding the project's core architecture and feature flow.
+Task: Identify up to ${settings.criticalChildCount} key functions, methods, or modules directly called from this function that are truly significant to understanding the project's core architecture and feature flow.
 
 Strict filtering rules:
 - Return only callees that meaningfully advance the core feature workflow, orchestrate important subsystems, or contain important domain logic.
@@ -164,6 +170,7 @@ Return JSON only. No markdown fences. Exact shape:
           { role: "user", content: prompt },
         ],
       },
+      settings,
     });
 
     const parsedRaw = ChatCompletionsResponseSchema.parse(raw ?? {});
@@ -177,7 +184,9 @@ Return JSON only. No markdown fences. Exact shape:
     if (!text) return NextResponse.json({ error: "Empty AI response" }, { status: 500 });
 
     const parsed = ExpandResponseSchema.parse(parseJsonObject(text));
-    return NextResponse.json(parsed);
+    return NextResponse.json({
+      children: parsed.children.slice(0, settings.criticalChildCount),
+    });
   } catch (err) {
     if (err instanceof z.ZodError) {
       return NextResponse.json(

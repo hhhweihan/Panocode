@@ -1,14 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
+import { RUNTIME_SETTINGS_HEADER, resolveRuntimeSettings } from "@/lib/runtimeSettings";
 
-function getGithubHeaders() {
+function getGithubHeaders(githubToken?: string) {
   const headers: Record<string, string> = {
     Accept: "application/vnd.github.v3+json",
     "User-Agent": "Panocode/1.0",
     "X-GitHub-Api-Version": "2022-11-28",
   };
 
-  if (process.env.GITHUB_TOKEN) {
-    headers.Authorization = `Bearer ${process.env.GITHUB_TOKEN}`;
+  if (githubToken) {
+    headers.Authorization = `Bearer ${githubToken}`;
   }
 
   return headers;
@@ -57,8 +58,11 @@ export async function GET(req: NextRequest) {
   }
 
   try {
+    const { settings } = resolveRuntimeSettings({
+      headerSettings: req.headers.get(RUNTIME_SETTINGS_HEADER),
+    });
     const res = await fetch(`https://api.github.com/repos/${owner}/${repo}/git/blobs/${sha}`, {
-      headers: getGithubHeaders(),
+      headers: getGithubHeaders(settings.githubToken),
     });
 
     if (!res.ok) {

@@ -7,6 +7,7 @@ import {
   parseJsonObject,
   requestChatCompletionsWithFallback,
 } from "@/lib/llm";
+import { resolveRuntimeSettings } from "@/lib/runtimeSettings";
 
 const AnalysisLocaleSchema = z.enum(["zh", "en"]);
 
@@ -27,10 +28,15 @@ export async function POST(req: NextRequest) {
     filePath: string;
     fileContent: string;
     locale?: "zh" | "en";
+    settings?: unknown;
   };
 
   const { repoUrl, repoName, description, languages, filePath, fileContent } = body;
   const locale = AnalysisLocaleSchema.catch("zh").parse(body.locale);
+  const { settings } = resolveRuntimeSettings({
+    bodySettings: body.settings,
+    headerSettings: req.headers.get("x-panocode-runtime-settings"),
+  });
 
   const langSummary = languages
     .slice(0, 5)
@@ -92,6 +98,7 @@ Language requirement:
         ],
       },
       preferGithubModels: process.env.GITHUB_USE_MODELS === "true",
+      settings,
     });
 
     const parsedRaw = ChatCompletionsResponseSchema.parse(raw ?? {});

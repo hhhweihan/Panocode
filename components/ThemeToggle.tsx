@@ -1,7 +1,6 @@
 "use client";
 
 import { Moon, Sun } from "lucide-react";
-import { usePathname } from "next/navigation";
 import { setTheme, useTheme } from "@/lib/theme";
 
 const OPTIONS = [
@@ -26,17 +25,13 @@ const THUMB_POSITION = {
 
 export default function ThemeToggle() {
   const theme = useTheme();
-  const pathname = usePathname();
-  const isAnalyzePage = pathname?.startsWith("/analyze") ?? false;
 
   return (
     <div
       role="radiogroup"
       aria-label="主题切换"
-      className="fixed z-[100] rounded-full border p-1 shadow-lg backdrop-blur-xl select-none"
+      className="rounded-full border p-1 shadow-lg backdrop-blur-xl select-none"
       style={{
-        top: `calc(env(safe-area-inset-top, 0px) + ${isAnalyzePage ? "9px" : "12px"})`,
-        right: `calc(env(safe-area-inset-right, 0px) + ${isAnalyzePage ? "14px" : "12px"})`,
         borderColor: "color-mix(in srgb, var(--border) 92%, transparent)",
         background: "color-mix(in srgb, var(--panel) 88%, transparent)",
         boxShadow: "0 8px 22px color-mix(in srgb, var(--bg) 14%, transparent)",

@@ -8,6 +8,7 @@ import {
   parseJsonObject,
   requestChatCompletionsWithFallback,
 } from "@/lib/llm";
+import { resolveRuntimeSettings } from "@/lib/runtimeSettings";
 
 const AnalysisLocaleSchema = z.enum(["zh", "en"]);
 
@@ -106,6 +107,7 @@ export async function POST(req: NextRequest) {
     filePath: string;
     fileContent: string;
     allFilePaths: string[];
+    settings?: unknown;
     languages?: { name: string; percentage: number }[];
     techStack?: { name: string; category: string }[];
     summary?: string | null;
@@ -115,6 +117,10 @@ export async function POST(req: NextRequest) {
 
   const { repoName, filePath, fileContent, allFilePaths } = body;
   const locale = AnalysisLocaleSchema.catch("zh").parse(body.locale);
+  const { settings } = resolveRuntimeSettings({
+    bodySettings: body.settings,
+    headerSettings: req.headers.get("x-panocode-runtime-settings"),
+  });
   const languageInstruction = locale === "zh"
     ? "Write description in Simplified Chinese. Keep code identifiers, file paths, library names, and technical proper nouns in their standard original form when appropriate."
     : "Write description in English.";
@@ -147,6 +153,7 @@ export async function POST(req: NextRequest) {
           { role: "user", content: prompt },
         ],
       },
+      settings,
     });
 
     const parsedRaw = ChatCompletionsResponseSchema.parse(raw ?? {});
@@ -163,7 +170,7 @@ export async function POST(req: NextRequest) {
     const result: CallgraphResult = {
       rootFunction: parsed.rootFunction,
       entryFile: filePath,
-      children: parsed.children,
+      children: parsed.children.slice(0, settings.criticalChildCount),
       bridge,
     };
     return NextResponse.json(result);

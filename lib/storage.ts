@@ -63,6 +63,14 @@ function emitHistoryUpdated() {
   }
 }
 
+function getRecordIdentity(record: AnalysisRecord) {
+  if ((record.source ?? "github") === "local") {
+    return `local:${record.url}`;
+  }
+
+  return `github:${record.repoMeta.fullName}`;
+}
+
 export function loadHistory(): AnalysisRecord[] {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -83,11 +91,13 @@ export function saveRecord(record: AnalysisRecord): void {
     emitHistoryUpdated();
   };
 
+  const recordIdentity = getRecordIdentity(record);
+
   try {
     const existing = loadHistory();
-    // Deduplicate by fullName — keep only the newest
+    // Deduplicate by stable identity — keep only the newest
     const deduped = existing.filter(
-      (r) => r.repoMeta.fullName !== record.repoMeta.fullName
+      (r) => getRecordIdentity(r) !== recordIdentity
     );
     const next = [record, ...deduped].slice(0, MAX_RECORDS);
     tryWrite(next);
@@ -97,7 +107,7 @@ export function saveRecord(record: AnalysisRecord): void {
       try {
         const existing = loadHistory();
         const trimmed = existing
-          .filter((r) => r.repoMeta.fullName !== record.repoMeta.fullName)
+          .filter((r) => getRecordIdentity(r) !== recordIdentity)
           .slice(0, MAX_RECORDS - 2);
 
         // Skip if the single record is unreasonably large (>1 MB)

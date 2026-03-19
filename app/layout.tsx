@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
-import ThemeToggle from "@/components/ThemeToggle";
+import { RuntimeSettingsProvider } from "@/components/RuntimeSettingsProvider";
+import TopRightControls from "@/components/TopRightControls";
 import { THEME_INIT_SCRIPT } from "@/lib/themeShared";
 import "./globals.css";
 
@@ -28,8 +29,10 @@ export default function RootLayout({
     <html lang="en" data-theme="dark" suppressHydrationWarning>
       <body className={`${geistSans.variable} ${geistMono.variable} antialiased`}>
         <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
-        <ThemeToggle />
-        {children}
+        <RuntimeSettingsProvider>
+          <TopRightControls />
+          {children}
+        </RuntimeSettingsProvider>
       </body>
     </html>
   );

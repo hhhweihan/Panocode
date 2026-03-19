@@ -44,15 +44,15 @@ export class GithubDataSourceError extends Error {
   }
 }
 
-function getGithubHeaders() {
+function getGithubHeaders(githubToken?: string) {
   const headers: Record<string, string> = {
     Accept: "application/vnd.github.v3+json",
     "User-Agent": "Panocode/1.0",
     "X-GitHub-Api-Version": "2022-11-28",
   };
 
-  if (process.env.GITHUB_TOKEN) {
-    headers.Authorization = `Bearer ${process.env.GITHUB_TOKEN}`;
+  if (githubToken) {
+    headers.Authorization = `Bearer ${githubToken}`;
   }
 
   return headers;
@@ -167,21 +167,23 @@ function flattenBlobPaths(tree: TreeNode[]): string[] {
 export class GithubDataSource implements DataSource {
   private readonly owner: string;
   private readonly repo: string;
+  private readonly githubToken: string;
   private cachedTree: TreeNode[] | null = null;
   private cachedInfo: ProjectInfo | null = null;
 
-  constructor(owner: string, repo: string) {
+  constructor(owner: string, repo: string, githubToken = "") {
     this.owner = owner;
     this.repo = repo;
+    this.githubToken = githubToken;
   }
 
-  static fromUrl(url: string) {
+  static fromUrl(url: string, githubToken = "") {
     const parsed = parseGithubUrl(url);
     if (!parsed) {
       throw new GithubDataSourceError("Invalid GitHub URL format", 400);
     }
 
-    return new GithubDataSource(parsed.owner, parsed.repo);
+    return new GithubDataSource(parsed.owner, parsed.repo, githubToken);
   }
 
   async getTree(): Promise<{ info: ProjectInfo; tree: TreeNode[] }> {
@@ -189,7 +191,7 @@ export class GithubDataSource implements DataSource {
       return { info: this.cachedInfo, tree: this.cachedTree };
     }
 
-    const headers = getGithubHeaders();
+    const headers = getGithubHeaders(this.githubToken);
     const repoRes = await fetch(`https://api.github.com/repos/${this.owner}/${this.repo}`, { headers });
 
     if (!repoRes.ok) {
@@ -254,7 +256,7 @@ export class GithubDataSource implements DataSource {
 
     const res = await fetch(
       `https://api.github.com/repos/${this.owner}/${this.repo}/git/blobs/${node.sha}`,
-      { headers: getGithubHeaders() },
+      { headers: getGithubHeaders(this.githubToken) },
     );
 
     if (!res.ok) {

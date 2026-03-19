@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { sanitizeRuntimeSettingsInput, type RuntimeSettings } from "@/lib/runtimeSettings";
+
 
 export const ChatCompletionsResponseSchema = z.object({
   choices: z.array(
@@ -62,9 +64,12 @@ export function parseJsonObject<T>(text: string): T {
   return JSON.parse(extractJsonObjectText(text)) as T;
 }
 
-function buildProviderConfigs(preferGithubModels = false): ProviderConfig[] {
-  const githubToken = process.env.GITHUB_TOKEN;
-  const llmApiKey = process.env.LLM_API_KEY ?? process.env.GEMINI_API_KEY;
+function buildProviderConfigs(
+  preferGithubModels = false,
+  overrides?: Partial<RuntimeSettings>,
+): ProviderConfig[] {
+  const githubToken = overrides?.githubToken || process.env.GITHUB_TOKEN;
+  const llmApiKey = overrides?.aiApiKey || process.env.LLM_API_KEY || process.env.GEMINI_API_KEY;
 
   const githubConfig = githubToken
     ? {
@@ -79,8 +84,8 @@ function buildProviderConfigs(preferGithubModels = false): ProviderConfig[] {
     ? {
         provider: "llm" as const,
         apiKey: llmApiKey,
-        baseUrl: normalizeBaseUrl(process.env.LLM_BASE_URL ?? "https://generativelanguage.googleapis.com/v1beta/openai"),
-        model: process.env.LLM_MODEL ?? "gemini-2.0-flash",
+        baseUrl: normalizeBaseUrl(overrides?.aiBaseUrl || process.env.LLM_BASE_URL || "https://generativelanguage.googleapis.com/v1beta/openai"),
+        model: overrides?.aiModel || process.env.LLM_MODEL || "gemini-2.0-flash",
       }
     : null;
 
@@ -107,7 +112,7 @@ function readErrorMessage(raw: ChatCompletionsResponse | null, status: number) {
 
 export function formatProviderError(message: string) {
   if (/(free tier.*exhausted|use free tier only|quota.*exceeded|insufficient quota)/i.test(message)) {
-    return `${message} Configure a paid-capable provider via LLM_API_KEY / LLM_BASE_URL / LLM_MODEL, or add GITHUB_TOKEN to enable GitHub Models fallback.`;
+    return `${message} Configure a paid-capable provider via settings or LLM_API_KEY / LLM_BASE_URL / LLM_MODEL, or add GITHUB_TOKEN to enable GitHub Models fallback.`;
   }
 
   return message;
@@ -116,8 +121,12 @@ export function formatProviderError(message: string) {
 export async function requestChatCompletionsWithFallback(options: {
   payload: Record<string, unknown>;
   preferGithubModels?: boolean;
+  settings?: Partial<RuntimeSettings>;
 }) {
-  const configs = buildProviderConfigs(options.preferGithubModels ?? process.env.GITHUB_USE_MODELS === "true");
+  const configs = buildProviderConfigs(
+    options.preferGithubModels ?? process.env.GITHUB_USE_MODELS === "true",
+    sanitizeRuntimeSettingsInput(options.settings),
+  );
 
   if (configs.length === 0) {
     throw new Error("LLM_API_KEY or GITHUB_TOKEN is not configured");

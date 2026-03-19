@@ -7,6 +7,7 @@ import {
   parseJsonObject,
   requestChatCompletionsWithFallback,
 } from "@/lib/llm";
+import { resolveRuntimeSettings } from "@/lib/runtimeSettings";
 
 // ── Zod schemas ───────────────────────────────────────────────────────────────
 
@@ -22,9 +23,14 @@ export async function POST(req: NextRequest) {
     functionName: string;
     callerFile: string;
     allFilePaths: string[];
+    settings?: unknown;
   };
 
   const { repoName, functionName, callerFile, allFilePaths } = body;
+  const { settings } = resolveRuntimeSettings({
+    bodySettings: body.settings,
+    headerSettings: req.headers.get("x-panocode-runtime-settings"),
+  });
   const fileListSample = allFilePaths.slice(0, 300).join("\n");
 
   const prompt = `You are helping locate where a function is defined in a software project.
@@ -64,6 +70,7 @@ Return JSON only. No markdown fences. Exact shape:
           { role: "user", content: prompt },
         ],
       },
+      settings,
     });
 
     const parsedRaw = ChatCompletionsResponseSchema.parse(raw ?? {});

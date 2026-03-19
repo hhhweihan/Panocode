@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { GithubDataSource, GithubDataSourceError } from "@/lib/datasource/github";
+import { RUNTIME_SETTINGS_HEADER, resolveRuntimeSettings } from "@/lib/runtimeSettings";
 
 export async function GET(req: NextRequest) {
   const url = req.nextUrl.searchParams.get("url");
@@ -8,7 +9,10 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    const datasource = GithubDataSource.fromUrl(url);
+    const { settings } = resolveRuntimeSettings({
+      headerSettings: req.headers.get(RUNTIME_SETTINGS_HEADER),
+    });
+    const datasource = GithubDataSource.fromUrl(url, settings.githubToken);
     const { info, tree } = await datasource.getTree();
 
     return NextResponse.json({
