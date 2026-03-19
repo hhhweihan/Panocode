@@ -73,7 +73,6 @@ const PANEL_TEXT = {
     bridgeReason: "命中原因",
     bridgeEvidence: "命中证据",
     allModules: "全部模块",
-    moduleFile: "工程文件",
     languages: "语言",
     techStack: "技术栈",
     entryFiles: "候选入口文件",
@@ -113,7 +112,6 @@ const PANEL_TEXT = {
     bridgeReason: "Reason",
     bridgeEvidence: "Evidence",
     allModules: "All Modules",
-    moduleFile: "Saved File",
     languages: "Languages",
     techStack: "Tech Stack",
     entryFiles: "Candidate Entry Files",
@@ -389,11 +387,6 @@ function AnalysisPanel({
         <div className="flex flex-col gap-2">
           <div className="flex items-center justify-between gap-2">
             <span className="text-xs font-medium" style={{ color: "var(--text)" }}>{text.modules}</span>
-            {moduleAnalysis.savedFilePath && (
-              <span className="text-[11px] truncate" style={{ color: "var(--muted)" }} title={moduleAnalysis.savedFilePath}>
-                {text.moduleFile}: {moduleAnalysis.savedFilePath}
-              </span>
-            )}
           </div>
           <div className="flex flex-wrap gap-1.5">
             <button

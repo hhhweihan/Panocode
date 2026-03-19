@@ -1,6 +1,4 @@
 import { NextRequest, NextResponse } from "next/server";
-import { promises as fs } from "node:fs";
-import path from "node:path";
 import { z } from "zod";
 import {
   ChatCompletionsResponseSchema,
@@ -27,10 +25,6 @@ const ModuleSchema = z.object({
 const ModuleResponseSchema = z.object({
   modules: z.array(ModuleSchema).max(10),
 });
-
-function sanitizeFileName(input: string) {
-  return input.replace(/[<>:"/\\|?*]+/g, "_").replace(/\s+/g, "-");
-}
 
 function normalizeModules(
   modules: z.infer<typeof ModuleSchema>[],
@@ -193,23 +187,6 @@ Return JSON only. Exact shape:
       assignments: buildAssignments(modules),
     };
 
-    const outputDir = path.join(process.cwd(), "analysis-output");
-    await fs.mkdir(outputDir, { recursive: true });
-
-    const outputPath = path.join(outputDir, `${sanitizeFileName(repoName)}.module-analysis.json`);
-    await fs.writeFile(outputPath, JSON.stringify({
-      generatedAt: new Date().toISOString(),
-      repoName,
-      repoUrl,
-      summary,
-      description,
-      languages,
-      techStack,
-      modules: result.modules,
-      assignments: result.assignments,
-    }, null, 2), "utf8");
-
-    result.savedFilePath = path.relative(process.cwd(), outputPath).replace(/\\/g, "/");
     return NextResponse.json({ ...result, usage });
   } catch (err) {
     if (err instanceof z.ZodError) {

@@ -27,7 +27,6 @@ export interface FunctionModule {
 export interface ModuleAnalysisResult {
   modules: FunctionModule[];
   assignments: Record<string, FunctionModuleAssignment>;
-  savedFilePath?: string | null;
 }
 
 export const MODULE_COLOR_PALETTE = [

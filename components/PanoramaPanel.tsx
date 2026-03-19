@@ -72,6 +72,8 @@ const TEXT = {
     downloadSvg: "导出 SVG",
     downloadJson: "导出 JSON",
     downloading: "导出中…",
+    export: "导出",
+    structure: "结构",
   },
   en: {
     title:   "Panorama · Call Graph",
@@ -99,6 +101,8 @@ const TEXT = {
     downloadSvg: "Export SVG",
     downloadJson: "Export JSON",
     downloading: "Exporting…",
+    export: "Export",
+    structure: "Structure",
   },
 } as const;
 
@@ -263,7 +267,7 @@ function countDescendants(node: CallgraphNode): number {
 
 function filterChildrenToMainline(children: CallgraphNode[]): CallgraphNode[] {
   return children
-    .map((child) => {
+    .map((child): CallgraphNode | null => {
       const filteredChildren = child.children ? filterChildrenToMainline(child.children) : [];
       const shouldKeep = child.drillDown === 1 || filteredChildren.length > 0;
 
@@ -702,6 +706,41 @@ function PanoramaPanel({
   );
 
   const [downloading, setDownloading] = useState<"png" | "svg" | null>(null);
+  const [exportMenuOpen, setExportMenuOpen] = useState(false);
+  const exportMenuRef = useRef<HTMLDivElement>(null);
+  const [structureMenuOpen, setStructureMenuOpen] = useState(false);
+  const structureMenuRef = useRef<HTMLDivElement>(null);
+  const [compactToolbar, setCompactToolbar] = useState(false);
+
+  useEffect(() => {
+    const element = containerRef.current;
+    if (!element || typeof ResizeObserver === "undefined") {
+      return;
+    }
+
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (!entry) return;
+      setCompactToolbar(entry.contentRect.width < 430);
+    });
+
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    if (!exportMenuOpen && !structureMenuOpen) return;
+    const handleClick = (e: MouseEvent) => {
+      if (exportMenuRef.current && !exportMenuRef.current.contains(e.target as Node)) {
+        setExportMenuOpen(false);
+      }
+      if (structureMenuRef.current && !structureMenuRef.current.contains(e.target as Node)) {
+        setStructureMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, [exportMenuOpen, structureMenuOpen]);
 
   const exportData = result
     ? { result, moduleAnalysis, locale: descriptionLocale, repoName }
@@ -713,6 +752,7 @@ function PanoramaPanel({
 
   const handleDownloadPng = async () => {
     if (!exportData) return;
+    setExportMenuOpen(false);
     setDownloading("png");
     try { await downloadPanoramaAsPng(exportData, `${filenameBase}.png`); }
     finally { setDownloading(null); }
@@ -720,6 +760,7 @@ function PanoramaPanel({
 
   const handleDownloadSvg = () => {
     if (!exportData) return;
+    setExportMenuOpen(false);
     setDownloading("svg");
     try { downloadPanoramaAsSvg(exportData, `${filenameBase}.svg`); }
     finally { setDownloading(null); }
@@ -727,6 +768,7 @@ function PanoramaPanel({
 
   const handleDownloadJson = () => {
     if (!result) return;
+    setExportMenuOpen(false);
     downloadPanoramaAsJson(result, `${filenameBase}.json`);
   };
 
@@ -848,10 +890,12 @@ function PanoramaPanel({
   }, [resultKey]);
 
   const collapseAll = useCallback(() => {
+    setStructureMenuOpen(false);
     setCollapseState({ resultKey, paths: new Set(collapsiblePaths) });
   }, [collapsiblePaths, resultKey]);
 
   const expandAll = useCallback(() => {
+    setStructureMenuOpen(false);
     setCollapseState({ resultKey, paths: new Set() });
   }, [resultKey]);
 
@@ -1026,32 +1070,128 @@ function PanoramaPanel({
     <div className="flex flex-col h-full overflow-hidden">
       {/* Header */}
       <div
-        className="flex items-center justify-between px-3 py-2 border-b shrink-0"
+        className="border-b shrink-0 px-3 py-2"
         style={{ borderColor: "var(--border)", background: "var(--panel)" }}
       >
-        <div className="flex items-center gap-1.5">
-          <Network size={12} style={{ color: "var(--accent)" }} />
-          <span
-            className="text-xs font-semibold uppercase tracking-wider"
-            style={{ color: "var(--muted)" }}
-          >
-            {t.title}
-          </span>
-          {result && (
-            <span className="text-xs tabular-nums" style={{ color: "var(--muted)" }}>
-              ({totalNodes})
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex min-w-0 items-center gap-1.5">
+            <Network size={12} style={{ color: "var(--accent)" }} />
+            <span
+              className="truncate text-xs font-semibold uppercase tracking-wider"
+              style={{ color: "var(--muted)" }}
+            >
+              {t.title}
             </span>
-          )}
-          {analyzingFunctions && analyzingFunctions.size > 0 && (
-            <Loader2
-              size={10}
-              className="animate-spin"
-              style={{ color: "var(--accent)" }}
-            />
-          )}
+            {result && (
+              <span className="shrink-0 text-xs tabular-nums" style={{ color: "var(--muted)" }}>
+                ({totalNodes})
+              </span>
+            )}
+            {analyzingFunctions && analyzingFunctions.size > 0 && (
+              <Loader2
+                size={10}
+                className="shrink-0 animate-spin"
+                style={{ color: "var(--accent)" }}
+              />
+            )}
+          </div>
+
+          <div className="flex shrink-0 items-center gap-1">
+            <div className="mr-1 flex items-center rounded-md border p-0.5" style={{ borderColor: "var(--border)" }}>
+              {(["zh", "en"] as const).map((value) => {
+                const active = value === descriptionLocale;
+                return (
+                  <button
+                    key={value}
+                    onClick={() => onDescriptionLocaleChange(value)}
+                    className="rounded px-1.5 py-0.5 text-[11px] transition-colors"
+                    style={{
+                      background: active ? "var(--accent)" : "transparent",
+                      color: active ? "var(--accent-contrast)" : "var(--muted)",
+                    }}
+                    title={`${t.descriptionLanguage}: ${value === "zh" ? t.localeZh : t.localeEn}`}
+                  >
+                    {value === "zh" ? "中" : "EN"}
+                  </button>
+                );
+              })}
+            </div>
+            <button
+              onClick={zoomOut}
+              className="rounded p-1 transition-colors hover:bg-[var(--hover)]"
+              title={t.zoomOut}
+            >
+              <ZoomOut size={11} style={{ color: "var(--muted)" }} />
+            </button>
+            <button
+              onClick={zoomIn}
+              className="rounded p-1 transition-colors hover:bg-[var(--hover)]"
+              title={t.zoomIn}
+            >
+              <ZoomIn size={11} style={{ color: "var(--muted)" }} />
+            </button>
+            <button
+              onClick={resetView}
+              className="rounded p-1 transition-colors hover:bg-[var(--hover)]"
+              title={t.reset}
+            >
+              <RefreshCcw size={11} style={{ color: "var(--muted)" }} />
+            </button>
+
+            {result && (
+              <div ref={exportMenuRef} className="relative ml-1 shrink-0">
+                <button
+                  onClick={() => setExportMenuOpen((v) => !v)}
+                  disabled={!!downloading}
+                  className="flex items-center gap-1 rounded border px-2 py-1 text-[11px] transition-colors hover:bg-[var(--hover)] disabled:opacity-50"
+                  style={{ borderColor: "var(--border)", color: "var(--muted)" }}
+                  title={t.export}
+                >
+                  {downloading
+                    ? <Loader2 size={11} className="animate-spin" style={{ color: "var(--accent)" }} />
+                    : <Download size={11} style={{ color: "var(--muted)" }} />
+                  }
+                  {!compactToolbar && <span>{t.export}</span>}
+                  <ChevronDown size={9} style={{ color: "var(--muted)" }} />
+                </button>
+                {exportMenuOpen && (
+                  <div
+                    className="absolute right-0 top-full z-50 mt-1 rounded-md border py-1 shadow-lg"
+                    style={{ background: "var(--panel)", borderColor: "var(--border)", minWidth: 120 }}
+                  >
+                    <button
+                      onClick={handleDownloadPng}
+                      className="flex w-full items-center gap-2 px-3 py-1.5 text-[11px] transition-colors hover:bg-[var(--hover)]"
+                      style={{ color: "var(--text)" }}
+                    >
+                      <ImageIcon size={11} style={{ color: "var(--muted)" }} />
+                      {t.downloadPng}
+                    </button>
+                    <button
+                      onClick={handleDownloadSvg}
+                      className="flex w-full items-center gap-2 px-3 py-1.5 text-[11px] transition-colors hover:bg-[var(--hover)]"
+                      style={{ color: "var(--text)" }}
+                    >
+                      <Download size={11} style={{ color: "var(--muted)" }} />
+                      {t.downloadSvg}
+                    </button>
+                    <button
+                      onClick={handleDownloadJson}
+                      className="flex w-full items-center gap-2 px-3 py-1.5 text-[11px] transition-colors hover:bg-[var(--hover)]"
+                      style={{ color: "var(--text)" }}
+                    >
+                      <FileJson size={11} style={{ color: "var(--muted)" }} />
+                      {t.downloadJson}
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
         </div>
-        <div className="flex items-center gap-0.5">
-          <div className="mr-2 flex items-center gap-1 rounded-md border px-1 py-1" style={{ borderColor: "var(--border)" }}>
+
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <div className="flex items-center gap-1 rounded-md border px-1 py-1" style={{ borderColor: "var(--border)" }}>
             <span className="px-1 text-[10px] uppercase tracking-wider" style={{ color: "var(--muted)" }}>
               {t.viewMode}
             </span>
@@ -1072,103 +1212,42 @@ function PanoramaPanel({
               );
             })}
           </div>
-          <div className="mr-2 flex items-center gap-1 rounded-md border px-1 py-1" style={{ borderColor: "var(--border)" }}>
-            <span className="px-1 text-[10px] uppercase tracking-wider" style={{ color: "var(--muted)" }}>
-              {t.descriptionLanguage}
-            </span>
-            {(["zh", "en"] as const).map((value) => {
-              const active = value === descriptionLocale;
-              return (
-                <button
-                  key={value}
-                  onClick={() => onDescriptionLocaleChange(value)}
-                  className="rounded px-2 py-0.5 text-[11px] transition-colors"
-                  style={{
-                    background: active ? "var(--accent)" : "transparent",
-                    color: active ? "var(--accent-contrast)" : "var(--muted)",
-                  }}
-                >
-                  {value === "zh" ? t.localeZh : t.localeEn}
-                </button>
-              );
-            })}
-          </div>
-          <button
-            onClick={expandAll}
-            className="flex items-center gap-1 rounded border px-2 py-1 text-[11px] transition-colors hover:bg-[var(--hover)]"
-            style={{ borderColor: "var(--border)", color: "var(--muted)" }}
-            title={t.expandAll}
-          >
-            <ChevronDown size={12} />
-            {t.expandAll}
-          </button>
-          <button
-            onClick={collapseAll}
-            className="flex items-center gap-1 rounded border px-2 py-1 text-[11px] transition-colors hover:bg-[var(--hover)]"
-            style={{ borderColor: "var(--border)", color: "var(--muted)" }}
-            title={t.collapseAll}
-          >
-            <ChevronUp size={12} />
-            {t.collapseAll}
-          </button>
-          <button
-            onClick={zoomOut}
-            className="p-1 rounded hover:bg-[var(--hover)] transition-colors"
-            title={t.zoomOut}
-          >
-            <ZoomOut size={11} style={{ color: "var(--muted)" }} />
-          </button>
-          <button
-            onClick={zoomIn}
-            className="p-1 rounded hover:bg-[var(--hover)] transition-colors"
-            title={t.zoomIn}
-          >
-            <ZoomIn size={11} style={{ color: "var(--muted)" }} />
-          </button>
-          <button
-            onClick={resetView}
-            className="p-1 rounded hover:bg-[var(--hover)] transition-colors"
-            title={t.reset}
-          >
-            <RefreshCcw size={11} style={{ color: "var(--muted)" }} />
-          </button>
 
-          {/* Download buttons — only shown when there's data */}
-          {result && (
-            <>
-              <div style={{ width: 1, height: 12, background: "var(--border)", margin: "0 2px" }} />
-              <button
-                onClick={handleDownloadPng}
-                disabled={!!downloading}
-                className="p-1 rounded hover:bg-[var(--hover)] transition-colors disabled:opacity-50"
-                title={t.downloadPng}
+          <div ref={structureMenuRef} className="relative">
+            <button
+              onClick={() => setStructureMenuOpen((value) => !value)}
+              className="flex items-center gap-1 rounded border px-2 py-1 text-[11px] transition-colors hover:bg-[var(--hover)]"
+              style={{ borderColor: "var(--border)", color: "var(--muted)" }}
+              title={t.structure}
+            >
+              <Sparkles size={12} />
+              {t.structure}
+              <ChevronDown size={10} />
+            </button>
+            {structureMenuOpen && (
+              <div
+                className="absolute left-0 top-full z-50 mt-1 rounded-md border py-1 shadow-lg"
+                style={{ background: "var(--panel)", borderColor: "var(--border)", minWidth: 136 }}
               >
-                {downloading === "png"
-                  ? <Loader2 size={11} className="animate-spin" style={{ color: "var(--accent)" }} />
-                  : <ImageIcon size={11} style={{ color: "var(--muted)" }} />
-                }
-              </button>
-              <button
-                onClick={handleDownloadSvg}
-                disabled={!!downloading}
-                className="p-1 rounded hover:bg-[var(--hover)] transition-colors disabled:opacity-50"
-                title={t.downloadSvg}
-              >
-                {downloading === "svg"
-                  ? <Loader2 size={11} className="animate-spin" style={{ color: "var(--accent)" }} />
-                  : <Download size={11} style={{ color: "var(--muted)" }} />
-                }
-              </button>
-              <button
-                onClick={handleDownloadJson}
-                disabled={!!downloading}
-                className="p-1 rounded hover:bg-[var(--hover)] transition-colors disabled:opacity-50"
-                title={t.downloadJson}
-              >
-                <FileJson size={11} style={{ color: "var(--muted)" }} />
-              </button>
-            </>
-          )}
+                <button
+                  onClick={expandAll}
+                  className="flex w-full items-center gap-2 px-3 py-1.5 text-[11px] transition-colors hover:bg-[var(--hover)]"
+                  style={{ color: "var(--text)" }}
+                >
+                  <ChevronDown size={11} style={{ color: "var(--muted)" }} />
+                  {t.expandAll}
+                </button>
+                <button
+                  onClick={collapseAll}
+                  className="flex w-full items-center gap-2 px-3 py-1.5 text-[11px] transition-colors hover:bg-[var(--hover)]"
+                  style={{ color: "var(--text)" }}
+                >
+                  <ChevronUp size={11} style={{ color: "var(--muted)" }} />
+                  {t.collapseAll}
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </div>
 

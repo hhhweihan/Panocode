@@ -284,11 +284,11 @@ function AnalyzeContent() {
   const entryCheckResultsRef = useRef<Record<string, import("@/app/api/analyze/entry/route").EntryCheckResult>>({});
   const callgraphResultRef = useRef<typeof callgraphResult>(null);
   const moduleAnalysisRef = useRef<ModuleAnalysisResult | null>(null);
-  const logsRef = useRef<typeof logs>([]);
   const usageStatsRef = useRef<AnalysisUsageStats>(EMPTY_ANALYSIS_USAGE_STATS);
   const analyzeUrlRef = useRef<string>("");
   const drilldownCacheRef = useRef<Map<string, CallgraphNode[]>>(new Map());
   const callgraphCacheRef = useRef<Partial<Record<AnalysisLocale, CallgraphResult>>>({});
+  const analysisEpochRef = useRef(0);
   const callgraphDescriptionLocaleRef = useRef<AnalysisLocale>("zh");
   const confirmedEntryContextRef = useRef<{
     path: string;
@@ -387,8 +387,12 @@ function AnalyzeContent() {
     setLogPanelMode(mode);
   }, []);
 
+  const MAX_LOGS = 500;
   const addLog = useCallback((entry: LogEntry) => {
-    setLogs((prev) => [...prev, entry]);
+    setLogs((prev) => {
+      const next = [...prev, entry];
+      return next.length > MAX_LOGS ? next.slice(-MAX_LOGS) : next;
+    });
   }, []);
 
   const applyUsage = useCallback((usage?: LlmRequestUsage | null) => {
@@ -411,7 +415,6 @@ function AnalyzeContent() {
   useEffect(() => { entryCheckResultsRef.current = entryCheckResults; }, [entryCheckResults]);
   useEffect(() => { callgraphResultRef.current = callgraphResult; }, [callgraphResult]);
   useEffect(() => { moduleAnalysisRef.current = moduleAnalysis; }, [moduleAnalysis]);
-  useEffect(() => { logsRef.current = logs; }, [logs]);
   useEffect(() => { usageStatsRef.current = usageStats; }, [usageStats]);
 
   const getProjectName = useCallback((info: AnalyzedProjectInfo) => {
@@ -463,7 +466,6 @@ function AnalyzeContent() {
       entryCheckResults: entryCheckResultsRef.current,
       callgraphResult: callgraphResultRef.current,
       moduleAnalysis: moduleAnalysisRef.current,
-      logs: logsRef.current,
       usageStats: usageStatsRef.current,
     };
     saveRecord(record);
@@ -553,37 +555,9 @@ function AnalyzeContent() {
     }
   }, [fetchFileContent, runtimeSettingsHeaders]);
 
-  const persistCallgraphArtifact = useCallback(async (
-    graphResult: CallgraphResult,
-    info: AnalyzedProjectInfo,
-  ): Promise<string | null> => {
-    try {
-      const currentAnalysis = analysisResultRef.current;
-      const res = await fetch("/api/analyze/callgraph/save", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          repoName: getProjectName(info),
-          repoUrl: getProjectLocation(info),
-          summary: currentAnalysis?.summary ?? null,
-          description: info.description ?? currentAnalysis?.summary ?? null,
-          locale: callgraphDescriptionLocaleRef.current,
-          callgraphResult: graphResult,
-        }),
-      });
-      const data = await res.json() as { error?: string; savedFilePath?: string };
 
-      if (!res.ok) {
-        addLog(makeLogEntry("warning", `调用图工程文件保存失败：${data.error ?? "unknown error"}`));
-        return null;
-      }
-
-      return data.savedFilePath ?? null;
-    } catch {
-      addLog(makeLogEntry("warning", "调用图工程文件保存失败：网络请求异常"));
-      return null;
-    }
-  }, [addLog, getProjectLocation, getProjectName]);
+  const EXPAND_CONCURRENCY = 5;
+  const MAX_EXPAND_NODES = 300;
 
   const runRecursiveAnalysis = useCallback(async (
     initialResult: CallgraphResult,
@@ -592,22 +566,43 @@ function AnalyzeContent() {
     descriptionLocale: AnalysisLocale,
   ) => {
     const maxDepth = settings.maxDrillDepth;
-    if (maxDepth < 2) return initialResult; // depth-1 is already done by the initial callgraph
+    if (maxDepth < 2) return initialResult;
 
+    const epoch = analysisEpochRef.current;
     const allFilePaths = filterCodeFiles(info.tree);
     const contentCache = new Map<string, string>();
     contentCache.set(initialResult.entryFile, entryFileContent);
-
-    const getFunctionCacheKey = (functionName: string, filePath: string) =>
-      `${filePath}::${functionName}`.toLowerCase();
+    // Deduplicate concurrent fetches for the same file
+    const fetchingFiles = new Map<string, Promise<string | null>>();
 
     async function fetchContent(filePath: string): Promise<string | null> {
       if (contentCache.has(filePath)) return contentCache.get(filePath)!;
-      const content = await fetchFileContent(filePath);
-      if (content !== null) {
-        contentCache.set(filePath, content);
+      if (fetchingFiles.has(filePath)) return fetchingFiles.get(filePath)!;
+      const promise = fetchFileContent(filePath).then((content) => {
+        fetchingFiles.delete(filePath);
+        if (content !== null) contentCache.set(filePath, content);
+        return content;
+      });
+      fetchingFiles.set(filePath, promise);
+      return promise;
+    }
+
+    // Sliding-window concurrency helper
+    async function runWithConcurrency<T, R>(
+      items: T[],
+      limit: number,
+      fn: (item: T) => Promise<R>,
+    ): Promise<R[]> {
+      const results: (R | undefined)[] = new Array(items.length);
+      let nextIndex = 0;
+      async function worker() {
+        while (nextIndex < items.length) {
+          const i = nextIndex++;
+          results[i] = await fn(items[i]);
+        }
       }
-      return content;
+      await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+      return results as R[];
     }
 
     type QueueItem = {
@@ -617,31 +612,14 @@ function AnalyzeContent() {
       pathIndices: number[];
     };
 
-    const queue: QueueItem[] = initialResult.children
-      .filter((n) => n.drillDown === 1)
-      .map((node, i) => ({
-        node,
-        depth: 1,
-        parentFile: initialResult.entryFile,
-        pathIndices: [i],
-      }));
+    type NodeResult = {
+      pathIndices: number[];
+      children: CallgraphNode[];
+      foundFile: string;
+    };
 
-    const visited = new Set<string>([initialResult.rootFunction]);
-    let localResult = initialResult;
-
-    while (queue.length > 0) {
-      const item = queue.shift()!;
-      const { node, depth, parentFile, pathIndices } = item;
-
-      if (depth >= maxDepth) continue;
-      if (node.drillDown !== 1) continue;
-
-      const wasVisited = visited.has(node.name);
-      if (!wasVisited) {
-        visited.add(node.name);
-      }
-
-      setAnalyzingFunctions((prev) => new Set([...prev, node.name]));
+    async function processOneNode(item: QueueItem): Promise<NodeResult | null> {
+      const { node, parentFile, pathIndices } = item;
 
       // Phase 1: search in parent file
       let snippet: string | null = null;
@@ -693,37 +671,14 @@ function AnalyzeContent() {
         } catch { /* ignore locate errors */ }
       }
 
-      if (!snippet) {
-        setAnalyzingFunctions((prev) => { const s = new Set(prev); s.delete(node.name); return s; });
-        continue;
-      }
+      if (!snippet) return null;
 
-      const cacheKey = getFunctionCacheKey(node.name, foundFile);
+      const cacheKey = `${foundFile}::${node.name}`.toLowerCase();
       const cachedChildren = drilldownCacheRef.current.get(cacheKey);
-      addLog(makeLogEntry("info", `递归分析缓存：${node.name} — ${cachedChildren ? "命中" : "未命中"}`));
+      addLog(makeLogEntry("info", `递归分析缓存：${node.name} — ${cachedChildren !== undefined ? "命中" : "未命中"}`));
 
-      if (cachedChildren) {
-        if (cachedChildren.length > 0) {
-          localResult = addChildrenToNode(localResult, pathIndices, cachedChildren);
-          setCallgraphResult(localResult);
-          cachedChildren
-            .filter((c) => c.drillDown === 1 && !visited.has(c.name))
-            .forEach((child, index) => {
-              queue.push({
-                node: child,
-                depth: depth + 1,
-                parentFile: child.likelyFile ?? foundFile,
-                pathIndices: [...pathIndices, index],
-              });
-            });
-        }
-        setAnalyzingFunctions((prev) => { const s = new Set(prev); s.delete(node.name); return s; });
-        continue;
-      }
-
-      if (wasVisited) {
-        setAnalyzingFunctions((prev) => { const s = new Set(prev); s.delete(node.name); return s; });
-        continue;
+      if (cachedChildren !== undefined) {
+        return { pathIndices, children: cachedChildren, foundFile };
       }
 
       // Expand: get sub-functions of this node
@@ -747,30 +702,75 @@ function AnalyzeContent() {
           applyUsage(expandData.usage);
           drilldownCacheRef.current.set(cacheKey, expandData.children);
           addLog(makeLogEntry("success", `递归分析：${node.name} AI 返回 ${expandData.children.length} 个关键子函数`, { response: expandData }));
-          if (expandData.children.length > 0) {
-            localResult = addChildrenToNode(localResult, pathIndices, expandData.children);
-            setCallgraphResult(localResult);
-            addLog(makeLogEntry("info",
-              `递归分析：${node.name} → ${expandData.children.length} 个子函数`));
-
-            expandData.children
-              .filter((c) => c.drillDown === 1 && !visited.has(c.name))
-              .forEach((child, i) => {
-                queue.push({
-                  node: child,
-                  depth: depth + 1,
-                  parentFile: foundFile,
-                  pathIndices: [...pathIndices, i],
-                });
-              });
-          }
+          return { pathIndices, children: expandData.children, foundFile };
         } else {
           const expandError = await expandRes.json() as { error?: string; usage?: LlmRequestUsage | null };
           applyUsage(expandError.usage);
           addLog(makeLogEntry("warning", `递归分析失败：${node.name} — ${expandError.error ?? "unknown error"}`, { response: expandError }));
+          return null;
         }
-      } catch { /* ignore expand errors */ }
-      setAnalyzingFunctions((prev) => { const s = new Set(prev); s.delete(node.name); return s; });
+      } catch { return null; }
+    }
+
+    const visited = new Set<string>([initialResult.rootFunction]);
+    let localResult = initialResult;
+    let totalExpandedNodes = 0;
+
+    // Seed the first batch with all depth-1 drillable nodes
+    let currentBatch: QueueItem[] = initialResult.children
+      .filter((n) => n.drillDown === 1)
+      .map((node, i) => ({
+        node,
+        depth: 1,
+        parentFile: initialResult.entryFile,
+        pathIndices: [i],
+      }));
+
+    while (currentBatch.length > 0) {
+      // Pre-filter: skip depth≥maxDepth, non-drillable, or already visited
+      const toProcess = currentBatch.filter((item) => {
+        if (item.depth >= maxDepth || item.node.drillDown !== 1) return false;
+        if (visited.has(item.node.name)) return false;
+        visited.add(item.node.name);
+        return true;
+      });
+      if (toProcess.length === 0) break;
+
+      // Mark all nodes in this batch as "analyzing" at once
+      setAnalyzingFunctions((prev) => new Set([...prev, ...toProcess.map((i) => i.node.name)]));
+
+      // Process the batch in parallel (up to EXPAND_CONCURRENCY at a time)
+      const results = await runWithConcurrency(toProcess, EXPAND_CONCURRENCY, processOneNode);
+
+      // Bail if a new analysis has started while we were waiting
+      if (analysisEpochRef.current !== epoch) return localResult;
+
+      // Apply results in order and build the next batch
+      const nextBatch: QueueItem[] = [];
+      for (let i = 0; i < results.length; i++) {
+        const result = results[i];
+        const item = toProcess[i];
+        setAnalyzingFunctions((prev) => { const s = new Set(prev); s.delete(item.node.name); return s; });
+        if (result && result.children.length > 0) {
+          localResult = addChildrenToNode(localResult, result.pathIndices, result.children);
+          totalExpandedNodes += result.children.length;
+          addLog(makeLogEntry("info", `递归分析：${item.node.name} → ${result.children.length} 个子函数`));
+          result.children
+            .filter((c) => c.drillDown === 1 && !visited.has(c.name))
+            .forEach((child, idx) => nextBatch.push({
+              node: child,
+              depth: item.depth + 1,
+              parentFile: result.foundFile,
+              pathIndices: [...item.pathIndices, idx],
+            }));
+        }
+      }
+      setCallgraphResult(localResult);
+      if (totalExpandedNodes >= MAX_EXPAND_NODES) {
+        addLog(makeLogEntry("warning", `递归分析：已展开 ${totalExpandedNodes} 个节点，达到上限，停止递归`));
+        break;
+      }
+      currentBatch = nextBatch;
     }
     return localResult;
   }, [addLog, applyUsage, attachRuntimeSettings, fetchFileContent, getProjectName, settings.maxDrillDepth]);
@@ -903,11 +903,7 @@ function AnalyzeContent() {
       callgraphResultRef.current = updatedResult;
       callgraphCacheRef.current[callgraphDescriptionLocaleRef.current] = updatedResult;
 
-      const savedFilePath = await persistCallgraphArtifact(updatedResult, info);
-      addLog(makeLogEntry(
-        "success",
-        `手动下钻完成：${targetNode.name} 新增 ${(nextChildren ?? []).length} 个子节点${savedFilePath ? `，已保存到 ${savedFilePath}` : ""}`,
-      ));
+      addLog(makeLogEntry("success", `手动下钻完成：${targetNode.name} 新增 ${(nextChildren ?? []).length} 个子节点`));
 
       if (!isRestoredFromHistory) {
         triggerSave(info);
@@ -942,7 +938,6 @@ function AnalyzeContent() {
     fetchRepoFileContent,
     getProjectName,
     isRestoredFromHistory,
-    persistCallgraphArtifact,
     repoInfo,
     settings.maxDrillDepth,
     triggerSave,
@@ -986,10 +981,7 @@ function AnalyzeContent() {
       setModuleAnalysis(result);
       moduleAnalysisRef.current = result;
       setSelectedModuleId(null);
-      addLog(makeLogEntry(
-        "success",
-        `模块划分完成：共 ${result.modules.length} 个功能模块${result.savedFilePath ? `，已保存到 ${result.savedFilePath}` : ""}`,
-      ));
+      addLog(makeLogEntry("success", `模块划分完成：共 ${result.modules.length} 个功能模块`));
       return result;
     } catch {
       addLog(makeLogEntry("warning", "模块划分：网络请求失败"));
@@ -1065,11 +1057,6 @@ function AnalyzeContent() {
       setCallgraphResult(finalResult);
       callgraphCacheRef.current[descriptionLocale] = finalResult;
 
-      const savedFilePath = await persistCallgraphArtifact(finalResult, info);
-      if (savedFilePath) {
-        addLog(makeLogEntry("success", `调用图工程文件已保存到 ${savedFilePath}`));
-      }
-
       if (descriptionLocale === callgraphDescriptionLocaleRef.current && !moduleAnalysisRef.current) {
         await runModuleAnalysis(finalResult, info);
       }
@@ -1083,7 +1070,7 @@ function AnalyzeContent() {
     } finally {
       setCallgraphLoading(false);
     }
-  }, [addLog, applyUsage, attachRuntimeSettings, getProjectName, persistCallgraphArtifact, runModuleAnalysis, runRecursiveAnalysis, triggerSave]);
+  }, [addLog, applyUsage, attachRuntimeSettings, getProjectName, runModuleAnalysis, runRecursiveAnalysis, triggerSave]);
 
   const resolveConfirmedEntryContext = useCallback(async () => {
     if (confirmedEntryContextRef.current) {
@@ -1342,6 +1329,7 @@ function AnalyzeContent() {
     drilldownCacheRef.current.clear();
     callgraphCacheRef.current = {};
     confirmedEntryContextRef.current = null;
+    analysisEpochRef.current++;
     setLogs(initialLogs);
     setUsageStats(EMPTY_ANALYSIS_USAGE_STATS);
     usageStatsRef.current = EMPTY_ANALYSIS_USAGE_STATS;
@@ -1534,7 +1522,7 @@ function AnalyzeContent() {
     setManualDrilldownPaths(new Set());
     callgraphCacheRef.current = {};
     confirmedEntryContextRef.current = null;
-    setLogs(record.logs);
+    setLogs(record.logs ?? []);
     setUsageStats(normalizeAnalysisUsageStats(record.usageStats));
     setWorkflowState({ state: "completed", stage: "complete" });
   }, []);

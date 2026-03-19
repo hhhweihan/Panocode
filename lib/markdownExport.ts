@@ -77,7 +77,7 @@ function renderCallgraph(result: CallgraphResult): string {
 // ── Main builder ──────────────────────────────────────────────────────────────
 
 export function buildMarkdown(record: AnalysisRecord): string {
-  const { repoMeta, analysisResult, entryCheckResults, callgraphResult, moduleAnalysis, logs, fileTree, url } = record;
+  const { repoMeta, analysisResult, entryCheckResults, callgraphResult, moduleAnalysis, logs = [], fileTree, url } = record;
   const { owner, repo, branch, description, stars } = repoMeta;
   const analyzedDate = new Date(record.analyzedAt).toLocaleString();
   const usageStats = normalizeAnalysisUsageStats(record.usageStats);
@@ -186,10 +186,6 @@ export function buildMarkdown(record: AnalysisRecord): string {
       lines.push("");
     }
 
-    if (moduleAnalysis.savedFilePath) {
-      lines.push(`Saved file: \`${moduleAnalysis.savedFilePath}\``);
-      lines.push("");
-    }
   }
 
   if (usageStats.modelCallCount > 0 || usageStats.totalTokens > 0) {

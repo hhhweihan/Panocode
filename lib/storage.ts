@@ -32,7 +32,7 @@ export interface AnalysisRecord {
   entryCheckResults: Record<string, EntryCheckResult>;
   callgraphResult: CallgraphResult | null;
   moduleAnalysis: ModuleAnalysisResult | null;
-  logs: LogEntry[];
+  logs?: LogEntry[];
   usageStats?: AnalysisUsageStats;
 }
 
