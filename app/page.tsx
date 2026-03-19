@@ -1,7 +1,7 @@
 "use client";
 
 import Image from "next/image";
-import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useState, useSyncExternalStore, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { parseGithubUrl } from "@/lib/github";
 import { ArrowRight, Blocks, FolderOpen, Github, GitBranch, History, Network } from "lucide-react";
@@ -91,7 +91,7 @@ function HistoryCard({
   );
 }
 
-export default function HomePage() {
+function HomePageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { hydrated: settingsHydrated, isAnalysisReady, missingRequiredSettings } = useRuntimeSettings();
@@ -584,5 +584,13 @@ export default function HomePage() {
         )}
       </div>
     </main>
+  );
+}
+
+export default function HomePage() {
+  return (
+    <Suspense>
+      <HomePageContent />
+    </Suspense>
   );
 }
