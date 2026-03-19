@@ -4,41 +4,79 @@ import {
   ChatCompletionsResponseSchema,
   extractText,
   formatProviderError,
+  parseJsonObject,
   requestChatCompletionsWithFallback,
 } from "@/lib/llm";
 
 const AnalysisLocaleSchema = z.enum(["zh", "en"]);
 
+const VALID_NODE_TYPES = ["function", "controller", "module", "framework"] as const;
+
+function normalizeNullableString(value: unknown) {
+  if (
+    value === "" ||
+    value === "null" ||
+    value === "N/A" ||
+    value === null ||
+    typeof value === "undefined"
+  ) {
+    return null;
+  }
+
+  return typeof value === "string" ? value : String(value);
+}
+
+function normalizeDrillDown(value: unknown) {
+  if (typeof value === "number" && (value === -1 || value === 0 || value === 1)) {
+    return value;
+  }
+
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === "-1" || normalized === "0" || normalized === "1") {
+      return Number(normalized);
+    }
+    if (["external", "stdlib", "third-party", "thirdparty", "trivial"].includes(normalized)) {
+      return -1;
+    }
+    if (["key", "important", "yes", "true", "internal"].includes(normalized)) {
+      return 1;
+    }
+  }
+
+  if (typeof value === "boolean") {
+    return value ? 1 : 0;
+  }
+
+  return 0;
+}
+
+function normalizeNodeType(value: unknown) {
+  if (typeof value !== "string") {
+    return "function";
+  }
+
+  const normalized = value.trim().toLowerCase();
+  return VALID_NODE_TYPES.includes(normalized as (typeof VALID_NODE_TYPES)[number])
+    ? normalized
+    : "function";
+}
+
+function formatZodIssue(issue: z.ZodIssue) {
+  const path = issue.path.length > 0 ? issue.path.join(".") : "response";
+  return `${path}: ${issue.message}`;
+}
+
 // ── Zod schemas ───────────────────────────────────────────────────────────────
 
 const CallgraphNodeSchema = z.object({
-  name: z.string(),
-  likelyFile: z.preprocess(
-    (v) => (v === "" || v === "null" || v === "N/A" || v === null ? null : v),
-    z.string().nullable(),
-  ),
-  drillDown: z.preprocess(
-    (v) => (typeof v === "string" ? parseInt(v, 10) : v),
-    z.union([z.literal(-1), z.literal(0), z.literal(1)]),
-  ),
-  description: z.string(),
-  nodeType: z.preprocess(
-    (v) => (typeof v === "string" && v.trim() ? v.trim().toLowerCase() : "function"),
-    z.union([
-      z.literal("function"),
-      z.literal("controller"),
-      z.literal("module"),
-      z.literal("framework"),
-    ]),
-  ),
-  routePath: z.preprocess(
-    (v) => (v === "" || v === "null" || v === "N/A" || v === null || typeof v === "undefined" ? null : v),
-    z.string().nullable(),
-  ),
-  bridgeNote: z.preprocess(
-    (v) => (v === "" || v === "null" || v === "N/A" || v === null || typeof v === "undefined" ? null : v),
-    z.string().nullable(),
-  ),
+  name: z.preprocess((v) => (typeof v === "string" && v.trim() ? v.trim() : "unknown"), z.string()),
+  likelyFile: z.preprocess(normalizeNullableString, z.string().nullable()),
+  drillDown: z.preprocess(normalizeDrillDown, z.union([z.literal(-1), z.literal(0), z.literal(1)])),
+  description: z.preprocess((v) => (typeof v === "string" ? v.trim() : ""), z.string()),
+  nodeType: z.preprocess(normalizeNodeType, z.enum(VALID_NODE_TYPES)),
+  routePath: z.preprocess(normalizeNullableString, z.string().nullable()),
+  bridgeNote: z.preprocess(normalizeNullableString, z.string().nullable()),
 });
 
 const ExpandResponseSchema = z.object({
@@ -138,12 +176,12 @@ Return JSON only. No markdown fences. Exact shape:
     const text = extractText(parsedRaw.choices?.[0]?.message.content);
     if (!text) return NextResponse.json({ error: "Empty AI response" }, { status: 500 });
 
-    const parsed = ExpandResponseSchema.parse(JSON.parse(text));
+    const parsed = ExpandResponseSchema.parse(parseJsonObject(text));
     return NextResponse.json(parsed);
   } catch (err) {
     if (err instanceof z.ZodError) {
       return NextResponse.json(
-        { error: `Invalid AI response: ${err.issues[0]?.message}` },
+        { error: `Invalid AI response: ${formatZodIssue(err.issues[0])}` },
         { status: 500 },
       );
     }

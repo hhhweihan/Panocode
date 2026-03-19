@@ -6,6 +6,7 @@ import {
   ChatCompletionsResponseSchema,
   extractText,
   formatProviderError,
+  parseJsonObject,
   requestChatCompletionsWithFallback,
 } from "@/lib/llm";
 import {
@@ -170,7 +171,7 @@ Return JSON only. Exact shape:
     const text = extractText(parsedRaw.choices?.[0]?.message.content);
     if (!text) return NextResponse.json({ error: "Empty AI response" }, { status: 500 });
 
-    const parsed = ModuleResponseSchema.parse(JSON.parse(text));
+    const parsed = ModuleResponseSchema.parse(parseJsonObject(text));
     const modules = normalizeModules(parsed.modules, functionNames);
     const result: ModuleAnalysisResult = {
       modules,

@@ -44,6 +44,24 @@ export function extractText(content: string | { type?: string; text?: string }[]
   return "";
 }
 
+export function extractJsonObjectText(text: string) {
+  const trimmed = text.trim();
+  const fenceMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+  const candidate = fenceMatch?.[1]?.trim() || trimmed;
+  const firstBrace = candidate.indexOf("{");
+  const lastBrace = candidate.lastIndexOf("}");
+
+  if (firstBrace === -1 || lastBrace === -1 || lastBrace <= firstBrace) {
+    throw new Error("Model did not return a JSON object");
+  }
+
+  return candidate.slice(firstBrace, lastBrace + 1);
+}
+
+export function parseJsonObject<T>(text: string): T {
+  return JSON.parse(extractJsonObjectText(text)) as T;
+}
+
 function buildProviderConfigs(preferGithubModels = false): ProviderConfig[] {
   const githubToken = process.env.GITHUB_TOKEN;
   const llmApiKey = process.env.LLM_API_KEY ?? process.env.GEMINI_API_KEY;

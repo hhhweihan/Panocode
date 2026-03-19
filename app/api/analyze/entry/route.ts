@@ -4,6 +4,7 @@ import {
   ChatCompletionsResponseSchema,
   extractText,
   formatProviderError,
+  parseJsonObject,
   requestChatCompletionsWithFallback,
 } from "@/lib/llm";
 
@@ -103,7 +104,7 @@ Language requirement:
     const text = extractText(parsedRaw.choices?.[0]?.message.content);
     if (!text) return NextResponse.json({ error: "Empty AI response" }, { status: 500 });
 
-    const result = EntryResultSchema.parse(JSON.parse(text));
+    const result = EntryResultSchema.parse(parseJsonObject(text));
     return NextResponse.json(result);
   } catch (err) {
     if (err instanceof z.ZodError) {
