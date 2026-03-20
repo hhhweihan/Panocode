@@ -154,9 +154,12 @@ npm run lint
 ### Analyze a Local Project
 
 1. Switch to Local Project on the home page
-2. Enter a local path directly, or choose a folder in browsers that support the File System Access API
-3. Click Analyze
-4. Open the analysis workspace and inspect the tree, source code, and call graph results
+2. If Panocode is running on your own machine, you can enter a local path directly
+3. If Panocode is deployed remotely, use a browser with the File System Access API and click "Choose Folder" to grant access
+4. If folder access is unavailable or you want a more portable flow, you can upload a ZIP archive directly
+5. The local-project area also supports dragging and dropping a ZIP archive; uploaded ZIP data is cached in the current browser and can usually be restored after a refresh
+6. Click Analyze
+7. Open the analysis workspace and inspect the tree, source code, and call graph results
 
 ## Output Files
 
@@ -205,7 +208,7 @@ docs/                Design documents and planning notes
 - Call graph and module analysis depend on LLM output and are not strict static-analysis results
 - Entry detection may be inaccurate for very large repositories, dynamic languages, or highly reflective frameworks
 - GitHub analysis is primarily aimed at public repositories; additional credentials may be required for rate limits or model access
-- Local project analysis depends on browser capabilities or local path access, so behavior may vary by environment
+- Local project analysis supports three entry modes: local-path access on the same machine, browser-granted folder access, and ZIP uploads; remote deployments cannot directly access a visitor's machine paths
 
 ## Development Notes
 
@@ -226,7 +229,13 @@ Entry detection is AI-assisted inference rather than compiler-level exact parsin
 
 ### 3. Why can I not choose a local folder directly in the browser?
 
-Folder selection depends on the File System Access API, which is not fully supported in every browser. You can also enter a local path directly and use the server-side path mode.
+Folder selection depends on the File System Access API, which is not fully supported in every browser.
+
+If you are using a remotely deployed instance, entering a local path will target the server filesystem, not your computer. In that case you must use "Choose Folder" to grant browser access, or run Panocode locally and use the path-based mode there.
+
+If the browser does not support the File System Access API, or if you need a more portable remote-analysis flow, uploading a ZIP archive is usually the most reliable option.
+
+The current implementation stores uploaded ZIP data in browser IndexedDB, so refreshing the page or reopening the analysis link in the same browser can usually restore the archive without re-uploading it.
 
 ## English Version
 

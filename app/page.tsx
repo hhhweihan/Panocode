@@ -1,10 +1,10 @@
 "use client";
 
 import Image from "next/image";
-import { useEffect, useMemo, useState, useSyncExternalStore, Suspense } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { parseGithubUrl } from "@/lib/github";
-import { ArrowRight, Blocks, FolderOpen, Github, GitBranch, History, Network } from "lucide-react";
+import { ArrowRight, Blocks, FolderOpen, Github, GitBranch, History, Network, Trash2, Upload } from "lucide-react";
 import { useRuntimeSettings } from "@/components/RuntimeSettingsProvider";
 import {
   subscribeHistorySummaries,
@@ -13,7 +13,33 @@ import {
 } from "@/lib/storage";
 import type { AnalysisRecordSummary } from "@/lib/storage";
 import * as localFileStore from "@/lib/localFileStore";
+import * as localArchiveStore from "@/lib/localArchiveStore";
+import { buildLocalArchive } from "@/lib/localArchiveBuilder";
+import {
+  clearArchivesFromIndexedDb,
+  listArchiveSummaries,
+  removeArchiveFromIndexedDb,
+  saveArchiveToIndexedDb,
+  type LocalArchiveSummary,
+} from "@/lib/localArchivePersistence";
 import { RUNTIME_SETTINGS_OPEN_EVENT } from "@/lib/runtimeSettings";
+
+function canUseServerLocalPathAccess() {
+  if (typeof window === "undefined") {
+    return false;
+  }
+
+  const hostname = window.location.hostname.toLowerCase();
+  return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "[::1]";
+}
+
+function supportsDirectoryPicker() {
+  if (typeof window === "undefined") {
+    return false;
+  }
+
+  return typeof (window as unknown as { showDirectoryPicker?: unknown }).showDirectoryPicker === "function";
+}
 
 function HistoryCard({
   summary,
@@ -106,8 +132,13 @@ function HomePageContent() {
   const [activeTab, setActiveTab] = useState<"github" | "local">("github");
   const [localPath, setLocalPath] = useState("");
   const [localError, setLocalError] = useState("");
-  const [localPickerMode, setLocalPickerMode] = useState<"server" | "client">("server");
+  const [localPickerMode, setLocalPickerMode] = useState<"server" | "client" | "archive">("server");
+  const [localArchiveLoading, setLocalArchiveLoading] = useState(false);
+  const [isArchiveDragActive, setIsArchiveDragActive] = useState(false);
+  const [cachedArchives, setCachedArchives] = useState<LocalArchiveSummary[]>([]);
+  const [archiveCacheLoading, setArchiveCacheLoading] = useState(false);
   const [mounted, setMounted] = useState(false);
+  const archiveInputRef = useRef<HTMLInputElement | null>(null);
 
   const valueProps = [
     {
@@ -145,9 +176,47 @@ function HomePageContent() {
     return missingRequiredSettings.map((field) => labelMap[field] ?? field);
   }, [missingRequiredSettings]);
   const showConfigGuard = searchParams.get("config") === "required" || !isAnalysisReady;
+  const browserCanPickDirectory = mounted && supportsDirectoryPicker();
+  const canUseLocalPathInput = mounted && canUseServerLocalPathAccess();
+  const localPathUnavailableMessage = "当前站点部署在远端服务器，不能直接读取你电脑上的本地路径。请改用“选择文件夹”，或在本机启动 Panocode。";
+  const localPickerUnavailableMessage = "当前浏览器不支持文件夹授权，且远端部署不能直接读取你电脑上的本地路径。请改用支持 File System Access API 的浏览器，或在本机启动 Panocode。";
+  const localArchiveUnavailableMessage = "请先上传 ZIP 压缩包，再开始分析。";
 
-  // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { setMounted(true); }, []);
+
+  useEffect(() => {
+    if (!mounted) {
+      return;
+    }
+
+    if (!canUseServerLocalPathAccess()) {
+      setLocalPickerMode("client");
+    }
+  }, [mounted]);
+
+  const refreshCachedArchives = useCallback(async () => {
+    if (!mounted) {
+      return;
+    }
+
+    setArchiveCacheLoading(true);
+    try {
+      const records = await listArchiveSummaries();
+      setCachedArchives(records);
+    } catch {
+      setCachedArchives([]);
+    } finally {
+      setArchiveCacheLoading(false);
+    }
+  }, [mounted]);
+
+  useEffect(() => {
+    if (activeTab !== "local") {
+      return;
+    }
+
+    refreshCachedArchives();
+  }, [activeTab, refreshCachedArchives]);
 
   const openRuntimeSettings = () => {
     window.dispatchEvent(new Event(RUNTIME_SETTINGS_OPEN_EVENT));
@@ -198,14 +267,40 @@ function HomePageContent() {
       return;
     }
 
+    if (localPickerMode === "server" && !canUseServerLocalPathAccess()) {
+      setLocalError(localPathUnavailableMessage);
+      return;
+    }
+
     if (!localPath.trim() && localPickerMode === "server") {
       setLocalError("请输入本地项目路径");
       return;
     }
+
+    if (localPickerMode === "client") {
+      const handle = localFileStore.getHandle();
+      if (!handle) {
+        setLocalError(browserCanPickDirectory ? "请先点击“选择文件夹”授权浏览器访问本地目录" : localPickerUnavailableMessage);
+        return;
+      }
+    }
+
+    if (localPickerMode === "archive" && !localArchiveStore.getArchive()) {
+      setLocalError(localArchiveUnavailableMessage);
+      return;
+    }
+
     setLocalError("");
     if (localPickerMode === "client") {
       const name = localPath || "local-project";
       router.push(`/analyze?source=local&mode=client&name=${encodeURIComponent(name)}`);
+    } else if (localPickerMode === "archive") {
+      const archive = localArchiveStore.getArchive();
+      const name = localPath || archive?.name || "local-archive";
+      const archiveKey = archive?.key;
+      router.push(
+        `/analyze?source=local&mode=archive&name=${encodeURIComponent(name)}${archiveKey ? `&archiveKey=${encodeURIComponent(archiveKey)}` : ""}`,
+      );
     } else {
       router.push(`/analyze?source=local&path=${encodeURIComponent(localPath.trim())}`);
     }
@@ -213,11 +308,12 @@ function HomePageContent() {
 
   const handlePickerClick = async () => {
     type WinWithPicker = Window & { showDirectoryPicker: () => Promise<FileSystemDirectoryHandle> };
-    if (typeof window === "undefined" || typeof (window as unknown as { showDirectoryPicker?: unknown }).showDirectoryPicker !== "function") {
+    if (!supportsDirectoryPicker()) {
       return;
     }
     try {
       const handle = await (window as unknown as WinWithPicker).showDirectoryPicker();
+      localArchiveStore.clearArchive();
       localFileStore.setHandle(handle);
       setLocalPath(handle.name);
       setLocalPickerMode("client");
@@ -228,10 +324,114 @@ function HomePageContent() {
   };
 
   const handleLocalPathChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!canUseLocalPathInput) {
+      return;
+    }
+
     setLocalPath(e.target.value);
     setLocalPickerMode("server");
     localFileStore.clearHandle();
+    localArchiveStore.clearArchive();
     if (localError) setLocalError("");
+  };
+
+  const handleArchiveButtonClick = () => {
+    archiveInputRef.current?.click();
+  };
+
+  const processLocalArchiveFile = async (file: File) => {
+    setLocalArchiveLoading(true);
+    setLocalError("");
+
+    try {
+      const archive = await buildLocalArchive(file);
+      localFileStore.clearHandle();
+      localArchiveStore.setArchive(archive);
+      await saveArchiveToIndexedDb(archive);
+      await refreshCachedArchives();
+      setLocalPath(archive.name);
+      setLocalPickerMode("archive");
+      router.push(`/analyze?source=local&mode=archive&name=${encodeURIComponent(archive.name)}&archiveKey=${encodeURIComponent(archive.key)}`);
+    } catch {
+      localArchiveStore.clearArchive();
+      setLocalError("ZIP 解析失败，请确认上传的是有效的项目压缩包。");
+    } finally {
+      setLocalArchiveLoading(false);
+    }
+  };
+
+  const handleArchiveSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+
+    if (!file) {
+      return;
+    }
+
+    await processLocalArchiveFile(file);
+  };
+
+  const handleArchiveDragOver = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setIsArchiveDragActive(true);
+  };
+
+  const handleArchiveDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    if (e.currentTarget.contains(e.relatedTarget as Node | null)) {
+      return;
+    }
+    setIsArchiveDragActive(false);
+  };
+
+  const handleArchiveDrop = async (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setIsArchiveDragActive(false);
+
+    const file = Array.from(e.dataTransfer.files).find((item) => item.name.toLowerCase().endsWith(".zip"));
+    if (!file) {
+      setLocalError("请拖入 ZIP 压缩包。");
+      return;
+    }
+
+    await processLocalArchiveFile(file);
+  };
+
+  const handleCachedArchiveOpen = (archive: LocalArchiveSummary) => {
+    setLocalError("");
+    setLocalPickerMode("archive");
+    setLocalPath(archive.name);
+    router.push(`/analyze?source=local&mode=archive&name=${encodeURIComponent(archive.name)}&archiveKey=${encodeURIComponent(archive.key)}`);
+  };
+
+  const handleCachedArchiveRemove = async (archive: LocalArchiveSummary) => {
+    await removeArchiveFromIndexedDb(archive.key);
+    if (localArchiveStore.getArchive()?.key === archive.key) {
+      localArchiveStore.clearArchive();
+      if (localPickerMode === "archive") {
+        setLocalPath("");
+      }
+    }
+    await refreshCachedArchives();
+  };
+
+  const handleClearCachedArchives = async () => {
+    await clearArchivesFromIndexedDb();
+    localArchiveStore.clearArchive();
+    if (localPickerMode === "archive") {
+      setLocalPath("");
+    }
+    await refreshCachedArchives();
+  };
+
+  const formatArchiveSavedAt = (value: number) => {
+    return new Date(value).toLocaleString(undefined, {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
   };
 
   const examples = ["microsoft/vscode", "hhhweihan/EasyTshark"];
@@ -240,6 +440,17 @@ function HomePageContent() {
     const isLocal = (item.source ?? "github") === "local";
     if (!isLocal) {
       router.push(`/analyze?url=${encodeURIComponent(item.url)}&historyId=${item.id}`);
+      return;
+    }
+
+    if (item.url.startsWith("local-archive:")) {
+      const archiveToken = item.url.slice("local-archive:".length);
+      const firstColon = archiveToken.indexOf(":");
+      const archiveKey = firstColon >= 0 ? archiveToken.slice(0, firstColon) : "";
+      const displayName = firstColon >= 0 ? archiveToken.slice(firstColon + 1) : archiveToken || item.repoName;
+      router.push(
+        `/analyze?source=local&mode=archive&name=${encodeURIComponent(displayName)}${archiveKey ? `&archiveKey=${encodeURIComponent(archiveKey)}` : ""}&historyId=${item.id}`,
+      );
       return;
     }
 
@@ -473,22 +684,56 @@ function HomePageContent() {
 
         {/* Local tab */}
         {activeTab === "local" && (
-          <div className="w-full">
-            {mounted && typeof window !== "undefined" &&
-              typeof (window as unknown as { showDirectoryPicker?: unknown }).showDirectoryPicker === "function" && (
+          <div
+            data-testid="local-archive-dropzone"
+            className="w-full rounded-2xl transition-colors"
+            onDragOver={handleArchiveDragOver}
+            onDragLeave={handleArchiveDragLeave}
+            onDrop={handleArchiveDrop}
+            style={{
+              border: isArchiveDragActive ? "1px dashed var(--accent)" : "1px dashed transparent",
+              background: isArchiveDragActive ? "color-mix(in srgb, var(--accent) 6%, transparent)" : "transparent",
+              padding: isArchiveDragActive ? "12px" : "0px",
+              margin: isArchiveDragActive ? "-12px" : "0px",
+            }}
+          >
+            <div className="mb-3 flex flex-wrap gap-2">
+              {browserCanPickDirectory && (
+                <button
+                  onClick={handlePickerClick}
+                  className="flex items-center gap-2 px-4 py-2 rounded-lg border text-sm transition-colors"
+                  style={{
+                    borderColor: "var(--border)",
+                    background: "var(--panel)",
+                    color: "var(--text)",
+                  }}
+                >
+                  <FolderOpen size={16} />
+                  选择文件夹
+                </button>
+              )}
+
               <button
-                onClick={handlePickerClick}
-                className="mb-3 flex items-center gap-2 px-4 py-2 rounded-lg border text-sm transition-colors"
+                onClick={handleArchiveButtonClick}
+                className="flex items-center gap-2 px-4 py-2 rounded-lg border text-sm transition-colors"
                 style={{
                   borderColor: "var(--border)",
                   background: "var(--panel)",
                   color: "var(--text)",
                 }}
               >
-                <FolderOpen size={16} />
-                选择文件夹
+                <Upload size={16} />
+                上传 ZIP
               </button>
-            )}
+
+              <input
+                ref={archiveInputRef}
+                type="file"
+                accept=".zip,application/zip"
+                className="hidden"
+                onChange={handleArchiveSelected}
+              />
+            </div>
 
             <div
               className="flex items-center gap-2 rounded-xl border px-4 py-3 transition-colors"
@@ -497,22 +742,37 @@ function HomePageContent() {
                 borderColor: localError ? "var(--error, #ef4444)" : "var(--border)",
               }}
             >
-              <FolderOpen size={18} style={{ color: "var(--muted)", flexShrink: 0 }} />
+              {localPickerMode === "archive"
+                ? <Upload size={18} style={{ color: "var(--muted)", flexShrink: 0 }} />
+                : <FolderOpen size={18} style={{ color: "var(--muted)", flexShrink: 0 }} />}
               <input
                 type="text"
                 value={localPath}
                 onChange={handleLocalPathChange}
                 onKeyDown={(e) => { if (e.key === "Enter") handleLocalAnalyze(); }}
-                placeholder="输入本地项目路径，例如 C:\Users\me\my-project"
+                placeholder={localPickerMode === "archive"
+                  ? "已选择 ZIP 压缩包，可直接开始分析"
+                  : (canUseLocalPathInput
+                    ? "输入本地项目路径，例如 C:\\Users\\me\\my-project"
+                    : (browserCanPickDirectory
+                      ? "远端部署请先点击“选择文件夹”或“上传 ZIP”"
+                      : "当前浏览器不支持文件夹授权，请上传 ZIP 或在本机启动 Panocode"
+                    ))}
                 className="flex-1 bg-transparent outline-none text-base"
                 style={{ color: "var(--text)" }}
+                readOnly={!canUseLocalPathInput || localPickerMode === "archive"}
               />
               <button
                 onClick={handleLocalAnalyze}
                 className="flex items-center gap-2 px-4 py-1.5 rounded-lg text-sm font-semibold transition-colors shrink-0"
-                style={{ background: "var(--accent)", color: "var(--accent-contrast)" }}
+                style={{
+                  background: "var(--accent)",
+                  color: "var(--accent-contrast)",
+                  opacity: localArchiveLoading ? 0.7 : 1,
+                }}
+                disabled={localArchiveLoading}
               >
-                立即分析
+                {localArchiveLoading ? "解析 ZIP 中" : "立即分析"}
                 <ArrowRight size={15} />
               </button>
             </div>
@@ -523,11 +783,103 @@ function HomePageContent() {
               </p>
             )}
 
+            {!canUseLocalPathInput && (
+              <p className="mt-2 text-xs text-left leading-6" style={{ color: "var(--muted)" }}>
+                远端部署不能直接读取你电脑上的路径。可使用浏览器文件夹授权，或直接上传 ZIP 压缩包。
+              </p>
+            )}
+
+            <p className="mt-2 text-xs text-left leading-6" style={{ color: "var(--muted)" }}>
+              也可以直接把 ZIP 压缩包拖到这个区域。上传后的 ZIP 会缓存在当前浏览器里，刷新页面后仍可恢复。
+            </p>
+
             {localPickerMode === "client" && localPath && (
               <p className="mt-2 text-xs text-left" style={{ color: "var(--muted)" }}>
                 已选择文件夹：{localPath}（将在浏览器中直接读取）
               </p>
             )}
+
+            {localPickerMode === "archive" && localPath && (
+              <p className="mt-2 text-xs text-left" style={{ color: "var(--muted)" }}>
+                已载入 ZIP：{localPath}（将在浏览器中解压并读取）
+              </p>
+            )}
+
+            {isArchiveDragActive && (
+              <p className="mt-3 text-sm text-left font-medium" style={{ color: "var(--accent)" }}>
+                松开鼠标以上传 ZIP 并开始准备分析。
+              </p>
+            )}
+
+            <div
+              className="mt-4 rounded-2xl border px-4 py-4 text-left"
+              style={{ borderColor: "var(--border)", background: "var(--panel)" }}
+            >
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <div className="text-sm font-semibold" style={{ color: "var(--text)" }}>
+                    ZIP 缓存管理
+                  </div>
+                  <p className="mt-1 text-xs leading-6" style={{ color: "var(--muted)" }}>
+                    浏览器最多保留最近 5 个 ZIP，超出或超过 7 天会自动清理。
+                  </p>
+                </div>
+                <button
+                  onClick={handleClearCachedArchives}
+                  className="flex items-center gap-1.5 rounded-lg border px-3 py-2 text-xs transition-colors"
+                  style={{ color: "var(--muted)", borderColor: "var(--border)" }}
+                  disabled={cachedArchives.length === 0}
+                >
+                  <Trash2 size={13} />
+                  清空缓存
+                </button>
+              </div>
+
+              {archiveCacheLoading ? (
+                <p className="mt-3 text-xs" style={{ color: "var(--muted)" }}>
+                  正在读取 ZIP 缓存...
+                </p>
+              ) : cachedArchives.length === 0 ? (
+                <p className="mt-3 text-xs" style={{ color: "var(--muted)" }}>
+                  当前没有可恢复的 ZIP 缓存。
+                </p>
+              ) : (
+                <div className="mt-3 space-y-2">
+                  {cachedArchives.map((archive) => (
+                    <div
+                      key={archive.key}
+                      className="flex items-center justify-between gap-3 rounded-xl border px-3 py-3"
+                      style={{ borderColor: "var(--border)", background: "var(--panel-2)" }}
+                    >
+                      <div className="min-w-0">
+                        <div className="truncate text-sm font-medium" style={{ color: "var(--text)" }}>
+                          {archive.name}
+                        </div>
+                        <div className="mt-1 text-[11px]" style={{ color: "var(--muted)" }}>
+                          最近保存：{formatArchiveSavedAt(archive.savedAt)}
+                        </div>
+                      </div>
+                      <div className="flex shrink-0 items-center gap-2">
+                        <button
+                          onClick={() => handleCachedArchiveOpen(archive)}
+                          className="rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors"
+                          style={{ background: "var(--accent)", color: "var(--accent-contrast)" }}
+                        >
+                          打开
+                        </button>
+                        <button
+                          onClick={() => handleCachedArchiveRemove(archive)}
+                          className="rounded-lg border px-3 py-1.5 text-xs transition-colors"
+                          style={{ color: "var(--muted)", borderColor: "var(--border)" }}
+                        >
+                          删除
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         )}
 

@@ -6,6 +6,8 @@ import { parseGithubUrl, type RepoInfo, type TreeNode } from "@/lib/github";
 import { filterCodeFiles } from "@/lib/codeFilter";
 import { makeLogEntry, type LogEntry } from "@/lib/logger";
 import * as localFileStore from "@/lib/localFileStore";
+import * as localArchiveStore from "@/lib/localArchiveStore";
+import { loadArchiveFromIndexedDb } from "@/lib/localArchivePersistence";
 import { buildLocalTree, readLocalFile } from "@/lib/localTreeBuilder";
 import FileTree from "@/components/FileTree";
 import CodePanel from "@/components/CodePanel";
@@ -48,6 +50,15 @@ import {
   Download,
   FolderOpen,
 } from "lucide-react";
+
+function canUseServerLocalPathAccess() {
+  if (typeof window === "undefined") {
+    return false;
+  }
+
+  const hostname = window.location.hostname.toLowerCase();
+  return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "[::1]";
+}
 
 const LEFT_PANEL_MIN_WIDTH = 260;
 const LEFT_PANEL_MAX_WIDTH = 520;
@@ -193,9 +204,14 @@ function AnalyzeContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const source = searchParams.get("source") === "local" ? "local" : "github";
-  const localMode = searchParams.get("mode") === "client" ? "client" : "server";
+  const localMode = searchParams.get("mode") === "client"
+    ? "client"
+    : searchParams.get("mode") === "archive"
+      ? "archive"
+      : "server";
   const localPath = searchParams.get("path") ?? "";
   const localName = searchParams.get("name") ?? "";
+  const archiveKey = searchParams.get("archiveKey") ?? "";
   const { settings, hydrated: settingsHydrated } = useRuntimeSettings();
 
   const [inputUrl, setInputUrl] = useState("");
@@ -251,6 +267,7 @@ function AnalyzeContent() {
   const runtimeSettingsHeaders = useMemo(() => buildRuntimeSettingsHeaders(settings), [settings]);
   const missingRequiredSettings = useMemo(() => getMissingRequiredRuntimeSettings(settings), [settings]);
   const isAnalysisReady = missingRequiredSettings.length === 0;
+  const localPathUnavailableMessage = "当前站点部署在远端服务器，不能直接读取你电脑上的本地路径。请返回首页使用“选择文件夹”，或在本机启动 Panocode。";
   const effectiveLogPanelMode = hasUserAdjustedLogPanelMode
     ? logPanelMode
     : workflowState.state === "working"
@@ -508,6 +525,10 @@ function AnalyzeContent() {
       }
     }
 
+    if (localMode === "archive") {
+      return localArchiveStore.getArchiveFileContent(filePath);
+    }
+
     if (!localPath) return null;
 
     try {
@@ -546,7 +567,7 @@ function AnalyzeContent() {
         headers: runtimeSettingsHeaders,
       });
       const data = await res.json() as { content?: string };
-      if (!res.ok || !data.content) {
+      if (!res.ok || typeof data.content !== "string") {
         return null;
       }
       return data.content;
@@ -814,7 +835,7 @@ function AnalyzeContent() {
 
       for (const candidateFile of candidateFiles) {
         const content = await fetchRepoFileContent(info, candidateFile);
-        if (!content) {
+        if (content === null) {
           continue;
         }
 
@@ -846,7 +867,7 @@ function AnalyzeContent() {
         if (locateRes.ok && locateData.suggestedFiles) {
           for (const suggestedFile of locateData.suggestedFiles) {
             const content = await fetchRepoFileContent(info, suggestedFile);
-            if (!content) {
+            if (content === null) {
               continue;
             }
 
@@ -1093,7 +1114,7 @@ function AnalyzeContent() {
 
     try {
       const fileContent = await fetchFileContent(confirmedPath);
-      if (!fileContent) {
+      if (fileContent === null) {
         return null;
       }
 
@@ -1147,7 +1168,7 @@ function AnalyzeContent() {
       let fileContent: string;
       try {
         const content = await fetchFileContent(entry.path);
-        if (!content) {
+        if (content === null) {
           addLog(makeLogEntry("warning", `入口研判：${entry.path} 文件读取失败`));
           continue;
         }
@@ -1391,11 +1412,31 @@ function AnalyzeContent() {
   const fetchLocalTree = useCallback(async (pathOverride?: string) => {
     const resolvedPath = (pathOverride ?? localPath).trim();
     const existingHandle = localMode === "client" ? localFileStore.getHandle() : null;
+    let existingArchive = localMode === "archive" ? localArchiveStore.getArchive() : null;
+
+    if (localMode === "archive" && (!existingArchive || (archiveKey && existingArchive.key !== archiveKey)) && archiveKey) {
+      try {
+        const restoredArchive = await loadArchiveFromIndexedDb(archiveKey);
+        if (restoredArchive) {
+          localArchiveStore.setArchive(restoredArchive);
+          existingArchive = restoredArchive;
+        }
+      } catch {
+        // Fall through to normal missing-archive handling below.
+      }
+    }
+
     const displayName = localMode === "client"
       ? (existingHandle?.name ?? localName) || "local-project"
-      : resolvedPath.split(/[\\/]/).filter(Boolean).pop() || resolvedPath || "local-project";
+      : localMode === "archive"
+        ? (existingArchive?.name ?? localName) || "local-archive"
+        : resolvedPath.split(/[\\/]/).filter(Boolean).pop() || resolvedPath || "local-project";
 
-    analyzeUrlRef.current = localMode === "client" ? `local:${displayName}` : resolvedPath;
+    analyzeUrlRef.current = localMode === "client"
+      ? `local:${displayName}`
+      : localMode === "archive"
+        ? `local-archive:${existingArchive?.key ?? archiveKey}:${displayName}`
+        : resolvedPath;
     setWorkflowState({ state: "working", stage: "tree" });
 
     if (localMode === "server" && !resolvedPath) {
@@ -1403,6 +1444,15 @@ function AnalyzeContent() {
       setInputError(message);
       setTreeError(message);
       setWorkflowState({ state: "error", stage: "error" });
+      return;
+    }
+
+    if (localMode === "server" && !canUseServerLocalPathAccess()) {
+      setInputError(localPathUnavailableMessage);
+      setTreeError(localPathUnavailableMessage);
+      setWorkflowState({ state: "error", stage: "error" });
+      setLogs([makeLogEntry("error", localPathUnavailableMessage)]);
+      setTreeLoading(false);
       return;
     }
 
@@ -1441,6 +1491,35 @@ function AnalyzeContent() {
           displayName: handle.name,
           localPath: null,
         };
+      } else if (localMode === "archive") {
+        const archive = existingArchive ?? localArchiveStore.getArchive();
+        if (!archive) {
+          const message = "ZIP 项目连接已断开，请返回首页重新上传压缩包。";
+          setTreeError(message);
+          setWorkflowState({ state: "error", stage: "error" });
+          addLog(makeLogEntry("error", message));
+          return;
+        }
+
+        info = {
+          owner: "",
+          repo: archive.name,
+          branch: "",
+          fullName: `local-archive:${archive.name}`,
+          description: null,
+          homepage: null,
+          primaryLanguage: null,
+          license: null,
+          topics: [],
+          forks: undefined,
+          openIssues: undefined,
+          updatedAt: null,
+          stars: undefined,
+          tree: archive.tree,
+          source: "local",
+          displayName: archive.name,
+          localPath: null,
+        };
       } else {
         const res = await fetch(`/api/local/tree?path=${encodeURIComponent(resolvedPath)}`);
         const data = await res.json();
@@ -1467,14 +1546,14 @@ function AnalyzeContent() {
       addLog(makeLogEntry("success", `文件树加载完成：${files} 个文件，${dirs} 个目录`));
       fetchAnalysis(info, analysisLocaleRef.current);
     } catch {
-      const msg = "无法读取本地目录";
+      const msg = localMode === "archive" ? "无法读取 ZIP 项目" : "无法读取本地目录";
       setTreeError(msg);
       setWorkflowState({ state: "error", stage: "error" });
       addLog(makeLogEntry("error", msg));
     } finally {
       setTreeLoading(false);
     }
-  }, [addLog, fetchAnalysis, localMode, localName, localPath, resetAnalysisSession]);
+  }, [addLog, archiveKey, fetchAnalysis, localMode, localName, localPath, resetAnalysisSession]);
 
   const restoreFromRecord = useCallback((record: AnalysisRecord) => {
     setInputUrl(record.url);
@@ -1499,7 +1578,9 @@ function AnalyzeContent() {
       tree: record.fileTree,
       source: record.source ?? "github",
       displayName: record.displayName,
-      localPath: record.source === "local" ? record.url : null,
+      localPath: record.source === "local" && !record.url.startsWith("local:") && !record.url.startsWith("local-archive:")
+        ? record.url
+        : null,
     };
     repoInfoRef.current = info;
     setRepoInfo(info);
@@ -1539,7 +1620,7 @@ function AnalyzeContent() {
       if (record) { restoreFromRecord(record); return; }
     }
     if (source === "local") {
-      setInputUrl(localMode === "client" ? localName : localPath);
+      setInputUrl(localMode === "server" ? localPath : localName);
       fetchLocalTree();
       return;
     }
@@ -1571,12 +1652,28 @@ function AnalyzeContent() {
         return;
       }
 
+      if (localMode === "server" && !canUseServerLocalPathAccess()) {
+        setInputError(localPathUnavailableMessage);
+        return;
+      }
+
       setIsRestoredFromHistory(false);
       setCurrentRecordId(null);
 
       if (localMode === "client") {
         const nextName = trimmed || localName || repoInfo?.displayName || "local-project";
         router.replace(`/analyze?source=local&mode=client&name=${encodeURIComponent(nextName)}`);
+        setInputUrl(nextName);
+        fetchLocalTree();
+        return;
+      }
+
+      if (localMode === "archive") {
+        const nextName = trimmed || localName || repoInfo?.displayName || "local-archive";
+        const currentArchiveKey = localArchiveStore.getArchive()?.key ?? archiveKey;
+        router.replace(
+          `/analyze?source=local&mode=archive&name=${encodeURIComponent(nextName)}${currentArchiveKey ? `&archiveKey=${encodeURIComponent(currentArchiveKey)}` : ""}`,
+        );
         setInputUrl(nextName);
         fetchLocalTree();
         return;
@@ -1607,7 +1704,7 @@ function AnalyzeContent() {
 
     try {
       const content = await fetchFileContent(node.path);
-      if (!content) {
+      if (content === null) {
         setFileError(text.fileLoadFailed);
         return;
       }
@@ -1672,6 +1769,24 @@ function AnalyzeContent() {
           <p className="text-base" style={{ color: "var(--text)" }}>
             本地文件夹连接已断开，请返回首页重新选择文件夹。<br />
             Local folder access has expired. Reconnect it from the home page.
+          </p>
+          <button
+            onClick={() => router.push("/")}
+            className="px-4 py-2 rounded-lg text-sm font-semibold"
+            style={{ background: "var(--accent)", color: "var(--accent-contrast)" }}
+          >
+            返回首页 · Back Home
+          </button>
+        </div>
+      )}
+      {mounted && source === "local" && localMode === "archive" && !archiveKey && !localArchiveStore.getArchive() && !repoInfo && !treeLoading && (
+        <div
+          className="absolute inset-0 z-50 flex flex-col items-center justify-center gap-4"
+          style={{ background: "var(--bg)" }}
+        >
+          <p className="text-base" style={{ color: "var(--text)" }}>
+            ZIP 项目连接已断开，请返回首页重新上传压缩包。<br />
+            Uploaded ZIP data is no longer available. Re-upload it from the home page.
           </p>
           <button
             onClick={() => router.push("/")}
@@ -1866,12 +1981,19 @@ function AnalyzeContent() {
                   if (inputError) setInputError("");
                 }}
                 onKeyDown={(e) => e.key === "Enter" && handleAnalyze()}
-                  placeholder={source === "local"
-                    ? (localMode === "client" ? "已选择本地文件夹 · Selected local folder" : "输入本地项目路径，例如 C:/Code/my-project")
-                    : "粘贴 GitHub 仓库地址，例如 github.com/owner/repo"}
+                placeholder={source === "local"
+                  ? (localMode === "client"
+                    ? "已选择本地文件夹 · Selected local folder"
+                    : localMode === "archive"
+                      ? "已上传 ZIP 项目 · Uploaded ZIP project"
+                      : (canUseServerLocalPathAccess()
+                        ? "输入本地项目路径，例如 C:/Code/my-project"
+                        : "远端部署不能直接读取你的本地路径，请返回首页选择文件夹或上传 ZIP"
+                      ))
+                  : "粘贴 GitHub 仓库地址，例如 github.com/owner/repo"}
                 className="flex-1 bg-transparent outline-none min-w-0"
                 style={{ color: "var(--text)", fontSize: "12px" }}
-                  readOnly={source === "local" && localMode === "client"}
+                readOnly={source === "local" && (localMode === "client" || localMode === "archive" || !canUseServerLocalPathAccess())}
               />
               <button
                 onClick={handleAnalyze}
@@ -1891,6 +2013,16 @@ function AnalyzeContent() {
             {source === "local" && localMode === "client" && inputUrl && (
               <p className="mt-1.5 text-xs" style={{ color: "var(--muted)" }}>
                 当前通过浏览器本地文件夹句柄读取项目代码。Local code is being read directly from your browser session.
+              </p>
+            )}
+            {source === "local" && localMode === "archive" && inputUrl && (
+              <p className="mt-1.5 text-xs" style={{ color: "var(--muted)" }}>
+                当前通过浏览器内存中的 ZIP 压缩包读取项目代码。Local code is being read from an uploaded ZIP in your browser session.
+              </p>
+            )}
+            {source === "local" && localMode === "server" && !canUseServerLocalPathAccess() && (
+              <p className="mt-1.5 text-xs leading-6" style={{ color: "var(--muted)" }}>
+                这个链接使用的是服务端本地路径模式，只适用于本机运行的 Panocode。远端部署请返回首页改用“选择文件夹”或“上传 ZIP”。
               </p>
             )}
           </div>
