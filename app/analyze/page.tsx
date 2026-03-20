@@ -813,7 +813,7 @@ function AnalyzeContent() {
       return;
     }
 
-    if (targetNode.drillDown === -1 || (targetNode.children?.length ?? 0) > 0) {
+    if (targetNode.drillDown === -1 || typeof targetNode.children !== "undefined") {
       return;
     }
 

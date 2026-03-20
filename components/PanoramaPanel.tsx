@@ -320,7 +320,7 @@ function collectCollapsiblePaths(result: CallgraphResult): string[] {
 }
 
 function shouldShowContinueDrilldown(node: CallgraphNode, path: number[], maxDrillDepth: number): boolean {
-  return !hasChildren(node) && node.drillDown !== -1 && path.length < maxDrillDepth;
+  return typeof node.children === "undefined" && node.drillDown !== -1 && path.length < maxDrillDepth;
 }
 
 // ── SVG Connectors ────────────────────────────────────────────────────────────

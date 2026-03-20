@@ -24,6 +24,35 @@ function parseQualifiedFunctionName(name: string): {
   };
 }
 
+function stripLineComment(line: string): string {
+  return line.replace(/\/\/.*$/, "").trim();
+}
+
+function buildSnippetCandidate(
+  content: string,
+  matchIndex: number,
+  maxLines: number,
+): { snippet: string; score: number } {
+  const before = content.slice(0, matchIndex);
+  const lineStart = before.lastIndexOf("\n") + 1;
+  const lines = content.slice(lineStart).split("\n");
+  const snippetLines = lines.slice(0, maxLines);
+  const headerLines = snippetLines
+    .slice(0, 8)
+    .map(stripLineComment)
+    .filter(Boolean);
+  const headerText = headerLines.join("\n");
+
+  const hasBlockBody = headerLines.some((line) => line.includes("=>") || line.includes("{"))
+    || headerLines.some((line, index) => line.endsWith(":") && index === 0);
+  const isDeclarationOnly = !hasBlockBody && /;\s*$/.test(headerText);
+
+  return {
+    snippet: snippetLines.join("\n"),
+    score: hasBlockBody ? 2 : isDeclarationOnly ? -1 : 0,
+  };
+}
+
 /**
  * Build a regex that matches common function/method/class definition patterns for `name`.
  * Covers Python, JS/TS, Go, Java, C#, C++, Ruby, PHP, Rust.
@@ -37,15 +66,18 @@ export function buildFunctionPattern(name: string): RegExp {
     const esc = escapeRegExp(candidate);
     patterns.push(
       `(?:async\\s+)?def\\s+${esc}\\s*\\(`,
+      `(?:export\\s+default\\s+)?(?:export\\s+)?(?:async\\s+)?function\\s*\\*?\\s+${esc}\\s*[(<]`,
       `(?:async\\s+)?function\\s*\\*?\\s+${esc}\\s*[(<]`,
       `(?:const|let|var)\\s+${esc}\\s*=\\s*(?:async\\s+)?(?:\\([^)]*\\)|[\\w]+)\\s*=>`,
+      `${esc}\\s*:\\s*(?:async\\s+)?(?:function\\s*\\*?\\s*)?\\(`,
+      `^[^\\S\\r\\n]*(?:export\\s+)?(?:async\\s+)?${esc}\\s*(?:<[^>{}\\n]+>)?\\s*\\(`,
       `func(?:\\s+\\([^)]*\\))?\\s+${esc}\\s*\\(`,
       `def\\s+(?:self\\.)?${esc}(?:[\\s(<]|$)`,
       `function\\s+${esc}\\s*\\(`,
       `(?:pub(?:\\s*\\([^)]*\\))?\\s+)?(?:async\\s+)?fn\\s+${esc}\\s*[<(]`,
       `class\\s+${esc}[\\s<{(:]`,
       `[\\w<>\\[\\]*&:~]+\\s+${esc}\\s*\\(`,
-      `^[^\\S\\r\\n]*(?:(?:public|private|protected|static|virtual|override|async|inline|constexpr|friend|final)\\s+)*(?:get\\s+|set\\s+)?${esc}\\s*\\(`,
+      `^[^\\S\\r\\n]*(?:(?:public|private|protected|static|virtual|override|async|inline|constexpr|friend|final|export)\\s+)*(?:get\\s+|set\\s+)?${esc}\\s*(?:<[^>{}\\n]+>)?\\s*\\(`,
     );
   }
 
@@ -66,14 +98,30 @@ export function extractFunctionSnippet(
   maxLines = 120,
 ): string | null {
   const pattern = buildFunctionPattern(name);
-  const match = pattern.exec(content);
-  if (!match) return null;
+  const globalPattern = new RegExp(pattern.source, `${pattern.flags}g`);
+  let bestCandidate: { snippet: string; score: number } | null = null;
 
-  // Find start of the matched line
-  const before = content.slice(0, match.index);
-  const lineStart = before.lastIndexOf("\n") + 1;
-  const lines = content.slice(lineStart).split("\n");
-  return lines.slice(0, maxLines).join("\n");
+  for (const match of content.matchAll(globalPattern)) {
+    const matchIndex = match.index;
+    if (typeof matchIndex !== "number") {
+      continue;
+    }
+
+    const candidate = buildSnippetCandidate(content, matchIndex, maxLines);
+    if (!bestCandidate || candidate.score > bestCandidate.score) {
+      bestCandidate = candidate;
+    }
+
+    if (candidate.score > 0) {
+      break;
+    }
+  }
+
+  if (!bestCandidate || bestCandidate.score < 0) {
+    return null;
+  }
+
+  return bestCandidate.snippet;
 }
 
 /**
