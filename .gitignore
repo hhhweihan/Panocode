@@ -27,6 +27,14 @@
 # editor/tool config
 .claude/
 .vscode/
+.idea/
+
+# tool-generated docs
+docs/superpowers/
+
+# local analysis output
+analysis-output/
+test-results/
 
 # debug
 npm-debug.log*
