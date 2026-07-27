@@ -87,8 +87,16 @@ const CallgraphSchema = z.object({
   children: z.array(CallgraphNodeSchema).max(20),
 });
 
+export type NodeVerification = "verified" | "external" | "unresolved";
+
 export type CallgraphNode = z.infer<typeof CallgraphNodeSchema> & {
   children?: CallgraphNode[]; // reserved for future recursive analysis
+  // Client-side verification metadata (not produced by the LLM).
+  // `resolvedFile`/`defLine` are set when the function definition was actually
+  // located in a real repo file; `verification` reflects the outcome.
+  resolvedFile?: string | null;
+  defLine?: number | null;
+  verification?: NodeVerification;
 };
 
 export type CallgraphResult = {

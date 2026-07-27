@@ -89,17 +89,18 @@ export function buildFunctionPattern(name: string): RegExp {
 }
 
 /**
- * Find the first occurrence of `name` in `content` and extract up to `maxLines` lines.
- * Returns null if not found.
+ * Locate the definition of `name` in `content`: extract up to `maxLines` lines
+ * starting at the best-scoring match and return both the snippet and the 1-based
+ * line number where the definition begins. Returns null if not found.
  */
-export function extractFunctionSnippet(
+export function locateFunctionDefinition(
   content: string,
   name: string,
   maxLines = 120,
-): string | null {
+): { snippet: string; line: number } | null {
   const pattern = buildFunctionPattern(name);
   const globalPattern = new RegExp(pattern.source, `${pattern.flags}g`);
-  let bestCandidate: { snippet: string; score: number } | null = null;
+  let bestCandidate: { snippet: string; score: number; matchIndex: number } | null = null;
 
   for (const match of content.matchAll(globalPattern)) {
     const matchIndex = match.index;
@@ -109,7 +110,7 @@ export function extractFunctionSnippet(
 
     const candidate = buildSnippetCandidate(content, matchIndex, maxLines);
     if (!bestCandidate || candidate.score > bestCandidate.score) {
-      bestCandidate = candidate;
+      bestCandidate = { ...candidate, matchIndex };
     }
 
     if (candidate.score > 0) {
@@ -121,7 +122,23 @@ export function extractFunctionSnippet(
     return null;
   }
 
-  return bestCandidate.snippet;
+  // 1-based line where the snippet begins (the match's own line).
+  const before = content.slice(0, bestCandidate.matchIndex);
+  const line = before.split("\n").length;
+
+  return { snippet: bestCandidate.snippet, line };
+}
+
+/**
+ * Find the first occurrence of `name` in `content` and extract up to `maxLines` lines.
+ * Returns null if not found.
+ */
+export function extractFunctionSnippet(
+  content: string,
+  name: string,
+  maxLines = 120,
+): string | null {
+  return locateFunctionDefinition(content, name, maxLines)?.snippet ?? null;
 }
 
 /**

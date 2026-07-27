@@ -22,6 +22,7 @@ import type { CallgraphResult, CallgraphNode } from "@/app/api/analyze/callgraph
 import {
   addChildrenToNode,
   extractFunctionSnippet,
+  locateFunctionDefinition,
   getNodeAtPath,
   serializeCallgraphPath,
 } from "@/lib/callgraphUtils";
@@ -76,6 +77,24 @@ type AnalyzedProjectInfo = RepoInfo & {
 
 function clampWidth(width: number, min: number, max: number) {
   return Math.min(Math.max(width, min), max);
+}
+
+/** Sliding-window concurrency helper: run `fn` over `items`, at most `limit` at a time. */
+async function runWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results: (R | undefined)[] = new Array(items.length);
+  let nextIndex = 0;
+  async function worker() {
+    while (nextIndex < items.length) {
+      const i = nextIndex++;
+      results[i] = await fn(items[i]);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results as R[];
 }
 
 const UI_TEXT = {
@@ -159,11 +178,20 @@ function countFiles(tree: TreeNode[]): { files: number; dirs: number } {
   return { files, dirs };
 }
 
+type FocusedCallgraphNode = {
+  name: string;
+  likelyFile: string | null;
+  description: string;
+  routePath: string | null;
+  resolvedFile: string | null;
+  defLine: number | null;
+};
+
 function findCallgraphNodeByFocus(
   result: CallgraphResult | null,
   functionName: string | null,
   filePath: string | null,
-): { name: string; likelyFile: string | null; description: string; routePath: string | null } | null {
+): FocusedCallgraphNode | null {
   if (!result || !functionName) return null;
 
   if (result.rootFunction === functionName && (!filePath || filePath === result.entryFile)) {
@@ -172,19 +200,24 @@ function findCallgraphNodeByFocus(
       likelyFile: result.entryFile,
       description: `Entry/root function in ${result.entryFile}`,
       routePath: null,
+      resolvedFile: result.entryFile,
+      defLine: null,
     };
   }
 
-  let matched: { name: string; likelyFile: string | null; description: string; routePath: string | null } | null = null;
+  let matched: FocusedCallgraphNode | null = null;
 
   function walk(nodes: CallgraphNode[]) {
     for (const node of nodes) {
-      if (node.name === functionName && (!filePath || !node.likelyFile || node.likelyFile === filePath)) {
+      const nodeFile = node.resolvedFile ?? node.likelyFile;
+      if (node.name === functionName && (!filePath || !nodeFile || nodeFile === filePath)) {
         matched = {
           name: node.name,
           likelyFile: node.likelyFile,
           description: node.description,
           routePath: node.routePath,
+          resolvedFile: node.resolvedFile ?? null,
+          defLine: node.defLine ?? null,
         };
         return;
       }
@@ -286,6 +319,8 @@ function AnalyzeContent() {
       moduleName: assignment?.moduleName ?? null,
       moduleColor: assignment?.color ?? null,
       routePath: node.routePath,
+      resolvedFile: node.resolvedFile,
+      defLine: node.defLine,
     };
   }, [callgraphResult, focusedFunctionName, focusedFunctionPath, moduleAnalysis]);
 
@@ -304,6 +339,8 @@ function AnalyzeContent() {
   const usageStatsRef = useRef<AnalysisUsageStats>(EMPTY_ANALYSIS_USAGE_STATS);
   const analyzeUrlRef = useRef<string>("");
   const drilldownCacheRef = useRef<Map<string, CallgraphNode[]>>(new Map());
+  // Session-level file-content cache shared by callgraph analysis and node verification.
+  const contentCacheRef = useRef<Map<string, string>>(new Map());
   const callgraphCacheRef = useRef<Partial<Record<AnalysisLocale, CallgraphResult>>>({});
   const analysisEpochRef = useRef(0);
   const callgraphDescriptionLocaleRef = useRef<AnalysisLocale>("zh");
@@ -580,6 +617,43 @@ function AnalyzeContent() {
   const EXPAND_CONCURRENCY = 5;
   const MAX_EXPAND_NODES = 300;
 
+  // Verify each child node by locating its definition in a real repo file.
+  // `getContent` fetches (and ideally caches) file text. Nodes marked drillDown
+  // === -1 are treated as external (expected to live outside the repo).
+  const verifyChildren = useCallback(async (
+    children: CallgraphNode[],
+    parentFile: string | null,
+    getContent: (file: string) => Promise<string | null>,
+  ): Promise<CallgraphNode[]> => {
+    return runWithConcurrency(children, EXPAND_CONCURRENCY, async (node) => {
+      if (node.verification === "verified") return node;
+
+      if (node.drillDown === -1) {
+        return { ...node, verification: "external" as const, resolvedFile: null, defLine: null };
+      }
+
+      const candidates = [node.likelyFile, parentFile].filter(
+        (value, index, list): value is string => Boolean(value) && list.indexOf(value) === index,
+      );
+
+      for (const file of candidates) {
+        const content = await getContent(file);
+        if (content === null) continue;
+        const located = locateFunctionDefinition(content, node.name);
+        if (located) {
+          return {
+            ...node,
+            verification: "verified" as const,
+            resolvedFile: file,
+            defLine: located.line,
+          };
+        }
+      }
+
+      return { ...node, verification: "unresolved" as const, resolvedFile: null, defLine: null };
+    });
+  }, [EXPAND_CONCURRENCY]);
+
   const runRecursiveAnalysis = useCallback(async (
     initialResult: CallgraphResult,
     info: AnalyzedProjectInfo,
@@ -591,7 +665,7 @@ function AnalyzeContent() {
 
     const epoch = analysisEpochRef.current;
     const allFilePaths = filterCodeFiles(info.tree);
-    const contentCache = new Map<string, string>();
+    const contentCache = contentCacheRef.current;
     contentCache.set(initialResult.entryFile, entryFileContent);
     // Deduplicate concurrent fetches for the same file
     const fetchingFiles = new Map<string, Promise<string | null>>();
@@ -606,24 +680,6 @@ function AnalyzeContent() {
       });
       fetchingFiles.set(filePath, promise);
       return promise;
-    }
-
-    // Sliding-window concurrency helper
-    async function runWithConcurrency<T, R>(
-      items: T[],
-      limit: number,
-      fn: (item: T) => Promise<R>,
-    ): Promise<R[]> {
-      const results: (R | undefined)[] = new Array(items.length);
-      let nextIndex = 0;
-      async function worker() {
-        while (nextIndex < items.length) {
-          const i = nextIndex++;
-          results[i] = await fn(items[i]);
-        }
-      }
-      await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
-      return results as R[];
     }
 
     type QueueItem = {
@@ -721,9 +777,10 @@ function AnalyzeContent() {
         if (expandRes.ok) {
           const expandData = await expandRes.json() as { children: CallgraphNode[]; usage?: LlmRequestUsage | null };
           applyUsage(expandData.usage);
-          drilldownCacheRef.current.set(cacheKey, expandData.children);
-          addLog(makeLogEntry("success", `递归分析：${node.name} AI 返回 ${expandData.children.length} 个关键子函数`, { response: expandData }));
-          return { pathIndices, children: expandData.children, foundFile };
+          const verifiedChildren = await verifyChildren(expandData.children, foundFile, fetchContent);
+          drilldownCacheRef.current.set(cacheKey, verifiedChildren);
+          addLog(makeLogEntry("success", `递归分析：${node.name} AI 返回 ${verifiedChildren.length} 个关键子函数`, { response: expandData }));
+          return { pathIndices, children: verifiedChildren, foundFile };
         } else {
           const expandError = await expandRes.json() as { error?: string; usage?: LlmRequestUsage | null };
           applyUsage(expandError.usage);
@@ -794,7 +851,7 @@ function AnalyzeContent() {
       currentBatch = nextBatch;
     }
     return localResult;
-  }, [addLog, applyUsage, attachRuntimeSettings, fetchFileContent, getProjectName, settings.maxDrillDepth]);
+  }, [addLog, applyUsage, attachRuntimeSettings, fetchFileContent, getProjectName, settings.maxDrillDepth, verifyChildren]);
 
   const handleManualDrilldown = useCallback(async (path: number[]) => {
     const info = repoInfo;
@@ -824,6 +881,13 @@ function AnalyzeContent() {
 
     try {
       const allFilePaths = filterCodeFiles(info.tree);
+      const getContent = async (file: string): Promise<string | null> => {
+        const cache = contentCacheRef.current;
+        if (cache.has(file)) return cache.get(file)!;
+        const content = await fetchRepoFileContent(info, file);
+        if (content !== null) cache.set(file, content);
+        return content;
+      };
       const parentNode = path.length > 1 ? getNodeAtPath(graph, path.slice(0, -1)) : null;
       const candidateFiles = [
         parentNode?.likelyFile ?? graph.entryFile,
@@ -915,7 +979,7 @@ function AnalyzeContent() {
           return;
         }
 
-        nextChildren = expandData.children ?? [];
+        nextChildren = await verifyChildren(expandData.children ?? [], foundFile, getContent);
         drilldownCacheRef.current.set(cacheKey, nextChildren);
       }
 
@@ -962,6 +1026,7 @@ function AnalyzeContent() {
     repoInfo,
     settings.maxDrillDepth,
     triggerSave,
+    verifyChildren,
   ]);
 
   const runModuleAnalysis = useCallback(async (
@@ -1028,9 +1093,19 @@ function AnalyzeContent() {
     setAnalyzingFunctions(new Set());
     setManualDrilldownPaths(new Set());
     drilldownCacheRef.current.clear();
+    contentCacheRef.current.clear();
 
     const allFilePaths = filterCodeFiles(info.tree);
     addLog(makeLogEntry("info", `调用图分析：开始分析 ${confirmedPath} 的关键子函数…`));
+
+    // Session-level file getter shared with verification (dedup via contentCacheRef).
+    const getContent = async (file: string): Promise<string | null> => {
+      const cache = contentCacheRef.current;
+      if (cache.has(file)) return cache.get(file)!;
+      const content = await fetchFileContent(file);
+      if (content !== null) cache.set(file, content);
+      return content;
+    };
 
     try {
       const callgraphRequest = {
@@ -1062,7 +1137,10 @@ function AnalyzeContent() {
         return;
       }
 
-      const result = data as CallgraphResult;
+      const rawResult = data as CallgraphResult;
+      contentCacheRef.current.set(confirmedPath, fileContent);
+      const verifiedTopLevel = await verifyChildren(rawResult.children, confirmedPath, getContent);
+      const result: CallgraphResult = { ...rawResult, children: verifiedTopLevel };
       setCallgraphResult(result);
       addLog(makeLogEntry(
         "success",
@@ -1091,7 +1169,7 @@ function AnalyzeContent() {
     } finally {
       setCallgraphLoading(false);
     }
-  }, [addLog, applyUsage, attachRuntimeSettings, getProjectName, runModuleAnalysis, runRecursiveAnalysis, triggerSave]);
+  }, [addLog, applyUsage, attachRuntimeSettings, fetchFileContent, getProjectName, runModuleAnalysis, runRecursiveAnalysis, triggerSave, verifyChildren]);
 
   const resolveConfirmedEntryContext = useCallback(async () => {
     if (confirmedEntryContextRef.current) {
@@ -1348,6 +1426,7 @@ function AnalyzeContent() {
     setModuleAnalysis(null);
     setSelectedModuleId(null);
     drilldownCacheRef.current.clear();
+    contentCacheRef.current.clear();
     callgraphCacheRef.current = {};
     confirmedEntryContextRef.current = null;
     analysisEpochRef.current++;
@@ -2132,6 +2211,7 @@ function AnalyzeContent() {
             error={fileError}
             locale={analysisLocale}
             focusedFunctionName={selectedPath && selectedPath === focusedFunctionPath ? focusedFunctionName : null}
+            focusedLineNumber={selectedPath && selectedPath === focusedFunctionPath ? (focusedFunction?.defLine ?? null) : null}
           />
         </div>
 

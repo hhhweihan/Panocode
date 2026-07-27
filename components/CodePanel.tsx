@@ -4,6 +4,7 @@ import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneDark, oneLight } from "react-syntax-highlighter/dist/esm/styles/prism";
 import { getLanguageFromPath } from "@/lib/github";
+import { buildFunctionPattern } from "@/lib/callgraphUtils";
 import { Copy, Check } from "lucide-react";
 import type { AnalysisLocale } from "@/components/AnalysisPanel";
 import { useTheme } from "@/lib/theme";
@@ -15,6 +16,9 @@ interface CodePanelProps {
   error: string | null;
   locale: AnalysisLocale;
   focusedFunctionName?: string | null;
+  // Precise 1-based definition line (from node verification). When provided it
+  // short-circuits the name-based fallback search below.
+  focusedLineNumber?: number | null;
 }
 
 const CODE_FONT_SIZE_STORAGE_KEY = "panocode-code-font-size";
@@ -51,7 +55,7 @@ const TEXT = {
   },
 } as const;
 
-function CodePanel({ path, content, loading, error, locale, focusedFunctionName = null }: CodePanelProps) {
+function CodePanel({ path, content, loading, error, locale, focusedFunctionName = null, focusedLineNumber: focusedLineNumberProp = null }: CodePanelProps) {
   const [copied, setCopied] = useState(false);
   const contentRef = useRef<HTMLDivElement>(null);
   const [fontSize, setFontSize] = useState(() => {
@@ -72,12 +76,23 @@ function CodePanel({ path, content, loading, error, locale, focusedFunctionName 
   const theme = useTheme();
   const text = TEXT[locale];
   const focusedLineNumber = useMemo(() => {
+    // Prefer the precise verified line when available.
+    if (focusedLineNumberProp && focusedLineNumberProp > 0) {
+      return focusedLineNumberProp;
+    }
+
     if (!content || !focusedFunctionName) return null;
 
+    // Fallback: definition-aware match (more precise than a substring scan).
+    const pattern = buildFunctionPattern(focusedFunctionName);
     const lines = content.split(/\r?\n/);
-    const index = lines.findIndex((line) => line.includes(focusedFunctionName));
-    return index >= 0 ? index + 1 : null;
-  }, [content, focusedFunctionName]);
+    const defIndex = lines.findIndex((line) => pattern.test(line));
+    if (defIndex >= 0) return defIndex + 1;
+
+    // Last resort: first line that mentions the name at all.
+    const nameIndex = lines.findIndex((line) => line.includes(focusedFunctionName));
+    return nameIndex >= 0 ? nameIndex + 1 : null;
+  }, [content, focusedFunctionName, focusedLineNumberProp]);
 
   useEffect(() => {
     try {

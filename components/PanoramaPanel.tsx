@@ -1,7 +1,7 @@
 "use client";
 
 import { memo, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ChevronDown, ChevronUp, Download, FileJson, Image as ImageIcon, Loader2, Minus, Network, Plus, RefreshCcw, Sparkles, ZoomIn, ZoomOut } from "lucide-react";
+import { AlertTriangle, CheckCircle2, ChevronDown, ChevronUp, Download, FileJson, Image as ImageIcon, Loader2, Minus, Network, Plus, RefreshCcw, Sparkles, ZoomIn, ZoomOut } from "lucide-react";
 import type { CallgraphResult, CallgraphNode } from "@/app/api/analyze/callgraph/route";
 import type { AnalysisLocale } from "@/components/AnalysisPanel";
 import { serializeCallgraphPath } from "@/lib/callgraphUtils";
@@ -42,6 +42,55 @@ const DRILL_LABEL = {
   zh: { 1: "重点", 0: "", [-1]: "外部" },
   en: { 1: "Key",  0: "", [-1]: "Ext." },
 } as const;
+
+// ── verification visuals ────────────────────────────────────────────────────
+// `verified`  — definition located in a real repo file (green ✓).
+// `unresolved`— internal node whose definition could not be located (amber !).
+// `external`  — expected to live outside the repo; already conveyed by the
+//               "外部/Ext." drill label, so no separate badge is rendered.
+
+const VERIFY_META = {
+  verified: {
+    Icon: CheckCircle2,
+    color: "#22c55e",
+    label: { zh: "已验证", en: "Verified" },
+  },
+  unresolved: {
+    Icon: AlertTriangle,
+    color: "#f59e0b",
+    label: { zh: "未定位", en: "Unresolved" },
+  },
+} as const;
+
+function VerificationBadge({
+  node,
+  locale,
+}: {
+  node: CallgraphNode;
+  locale: AnalysisLocale;
+}) {
+  const verification = node.verification;
+  if (verification !== "verified" && verification !== "unresolved") {
+    return null;
+  }
+
+  const meta = VERIFY_META[verification];
+  const { Icon } = meta;
+  const labelText = meta.label[locale];
+  const location = verification === "verified" && node.resolvedFile
+    ? `${node.resolvedFile}${node.defLine ? `:${node.defLine}` : ""}`
+    : null;
+  const title = location ? `${labelText} · ${location}` : labelText;
+
+  return (
+    <span
+      title={title}
+      style={{ display: "inline-flex", alignItems: "center", flexShrink: 0, color: meta.color }}
+    >
+      <Icon size={11} />
+    </span>
+  );
+}
 
 // ── Text strings ──────────────────────────────────────────────────────────────
 
@@ -374,6 +423,7 @@ function Connectors({
 function RootCard({
   name,
   file,
+  locale,
   onClick,
   onFocus,
   moduleColor,
@@ -382,6 +432,7 @@ function RootCard({
 }: {
   name: string;
   file: string;
+  locale: AnalysisLocale;
   onClick: () => void;
   onFocus?: (() => void) | null;
   moduleColor?: string | null;
@@ -418,13 +469,28 @@ function RootCard({
           background: moduleColor ?? "var(--root-card-header)",
           fontSize: 10,
           color: moduleColor ? "#ffffff" : "var(--card-key-text)",
-          overflow: "hidden",
-          textOverflow: "ellipsis",
-          whiteSpace: "nowrap",
           fontFamily: "var(--font-geist-mono, monospace)",
+          display: "flex",
+          alignItems: "center",
+          gap: 4,
         }}
       >
-        {filename}
+        <span
+          style={{
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+            flex: 1,
+          }}
+        >
+          {filename}
+        </span>
+        <span
+          title={locale === "zh" ? "已确认入口" : "Confirmed entry"}
+          style={{ display: "inline-flex", alignItems: "center", flexShrink: 0, color: "#22c55e" }}
+        >
+          <CheckCircle2 size={12} />
+        </span>
       </div>
       <div style={{ padding: "8px 10px" }}>
         <div
@@ -482,12 +548,13 @@ function ChildCard({ node, locale, onFileClick, onFocusNode, isAnalyzing, module
   return (
     <div
       onClick={() => {
-        onFocusNode?.(node.name, node.likelyFile ?? null);
-        if (node.likelyFile) {
-          onFileClick(node.likelyFile);
+        const targetFile = node.resolvedFile ?? node.likelyFile ?? null;
+        onFocusNode?.(node.name, targetFile);
+        if (targetFile) {
+          onFileClick(targetFile);
         }
       }}
-      title={[node.likelyFile, routePath].filter(Boolean).join("\n") || undefined}
+      title={[node.resolvedFile ?? node.likelyFile, routePath].filter(Boolean).join("\n") || undefined}
       style={{
         position: "absolute",
         width: CARD_W,
@@ -531,6 +598,7 @@ function ChildCard({ node, locale, onFileClick, onFocusNode, isAnalyzing, module
           {filename}
         </span>
         <div style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
+          <VerificationBadge node={node} locale={locale} />
           {isAnalyzing && (
             <Loader2
               size={10}
@@ -1306,6 +1374,7 @@ function PanoramaPanel({
                 <RootCard
                   name={visibleResult.rootFunction}
                   file={visibleResult.entryFile}
+                  locale={locale}
                   onFocus={() => onFocusNode?.(visibleResult.rootFunction, visibleResult.entryFile)}
                   onClick={() => onFileClick(visibleResult.entryFile)}
                   moduleColor={getFunctionModule(moduleAnalysis, visibleResult.rootFunction)?.color}
